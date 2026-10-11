@@ -1,15 +1,15 @@
 {
   "name": "tmc-level-params",
-  "version": "0.3.0+codex.20261011052746",
-  "description": "Level difficulty parameter harness for level designers: from a level range and Normal/Hard/ExHard counts, generate and check per-level totals, kinds, four-category split, targets, stacking, moving vehicles and duration from competitor mainline statistics.",
+  "version": "0.4.0+codex.20261011054742",
+  "description": "Level difficulty parameter harness for level designers: from a theme name, generate one checked parameter set per difficulty tier (five tiers learned from the competitor difficulty labels) plus one shared asset list.",
   "author": {
     "name": "XavierHeart"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Level Params",
-    "shortDescription": "Generate per-level difficulty parameters for a batch of levels.",
-    "longDescription": "For level designers, not production. Input a level range and how many Normal, Hard and ExHard levels it holds. The harness places the difficulties, draws each level from real competitor levels near the same position, checks every level and the batch, and writes level-params.json/csv/xlsx. Items are placeholders (building 1, prop 3); level production binds them to a theme. Standard library only; xlsx export needs xlsxwriter.",
+    "shortDescription": "Generate per-tier difficulty parameters for a theme.",
+    "longDescription": "For level designers, not production. Input a theme name. Five difficulty tiers are learned from the competitor mainline data: a class-balanced logistic model scores how much a level looks like the competitor Hard/ExHard levels from six parameters, and the score quantiles cut the real levels into five equal tiers. For each tier the harness draws the joint form, totals, kinds, four-category split, per-kind counts, targets, stacking, moving vehicles and duration from real levels of that tier, checks every rule and that the drawn parameters score inside the tier, and writes level-params.json/csv/xlsx with one asset list shared by all tiers. Items are placeholders (building 1, prop 3). Standard library only; xlsx export needs xlsxwriter.",
     "developerName": "XavierHeart",
     "category": "Productivity",
     "capabilities": [
@@ -17,8 +17,8 @@
       "Write"
     ],
     "defaultPrompt": [
-      "生成 101–150 关的难度参数：Normal 35 关，Hard 10 关，ExHard 5 关。",
-      "看一下 120 关的参数和依据。",
+      "给\"月球基地\"主题生成 5 个难度档位的参数。",
+      "看一下第 5 档的参数和依据。",
       "复查这份 level-params.json 是否还通过全部检查。"
     ],
     "brandColor": "#3A6EA5"

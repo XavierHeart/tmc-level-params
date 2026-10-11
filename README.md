@@ -1,16 +1,18 @@
 # TMC 关卡难度参数生成器
 
-给策划用的 Codex 插件，按 harness 流程运行。输入一段关卡区间和三类难度（Normal、Hard、ExHard）的关数，为每一关生成难度参数：
+给策划用的 Codex 插件，按 harness 流程运行。策划只输入主题名，插件为这个主题在 5 个难度档位上各生成一组参数：
 
 - 联合形态；
 - 物件总数、物件种类数；
-- 建筑、道具、载具、角色四类各几种、各多少个；
+- 建筑、道具、载具、角色四类各几种、各多少个，每种物件的数量；
 - 目标（几种、每种几个）；
 - 是否叠放、叠放结构；
 - 是否有运动载具；
 - 时长。
 
-物件用占位名（建筑1、道具3），不绑定主题。关卡生产（`tmc-level-designer-plugin`）读取输出的 `level-params.json`，再把占位名换成具体主题的物件。
+同时给出 5 档共用的素材清单（四类各需要几种）。难度档位从竞品数据学出：用竞品自己的 Hard/ExHard 标签训练难度分，再按难度分把竞品关卡等分成 5 档。
+
+物件用占位名（建筑1、道具3）。关卡生产（`tmc-level-designer-plugin`）读取输出的 `level-params.json`，再把占位名换成具体主题的物件。
 
 ## 安装
 
@@ -29,19 +31,19 @@ cd tmc-level-params
 在 Codex 里：
 
 ```text
-使用 $level-params，生成 101–150 关：Normal 35 关，Hard 10 关，ExHard 5 关。
+使用 $level-params，给"月球基地"主题生成各难度档位的参数。
 ```
 
 也可以直接运行 harness：
 
 ```bash
 H=plugins/tmc-level-params/skills/level-params/scripts/level-params-harness
-$H init --run out/101-150 --start 101 --end 150 --normal 35 --hard 10 --exhard 5
-$H generate --run out/101-150          # 生成并验算，写出 json/csv/xlsx
-$H level --run out/101-150 --level 120 # 看单关
+$H init --run out/月球基地 --theme 月球基地
+$H generate --run out/月球基地          # 5 档参数 + 素材清单，验算，写出 json/csv/xlsx
+$H tier --run out/月球基地 --tier 5     # 看一档
 ```
 
-运行目录和执行流程见 [SKILL.md](plugins/tmc-level-params/skills/level-params/SKILL.md)。生成方法和统计口径见 [references/method.md](plugins/tmc-level-params/skills/level-params/references/method.md)。
+运行目录和执行流程见 [SKILL.md](plugins/tmc-level-params/skills/level-params/SKILL.md)。难度档位的学习方法、生成方法和统计口径见 [references/method.md](plugins/tmc-level-params/skills/level-params/references/method.md)。
 
 ## 目录
 
@@ -51,6 +53,7 @@ $H level --run out/101-150 --level 120 # 看单关
 | `.../scripts/level-params-harness`、`params_harness.py` | harness 命令入口 |
 | `.../scripts/generate.py` | 参数生成和验算 |
 | `.../scripts/learn.py` | 从竞品数据学习，生成 `model.json` |
+| `.../scripts/tiers.py` | 难度分模型和 5 档切分 |
 | `.../scripts/model.json` | 学习结果（竞品原始数据不放进仓库） |
 | `.../scripts/tests/` | 测试 |
 

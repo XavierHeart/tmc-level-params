@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Level-parameter harness: deterministic steps around generate.py, driven by the agent.
 
-    level-params-harness init --run <dir> --start 101 --end 150 --normal 35 --hard 10 --exhard 5
+    level-params-harness init --run <dir> --theme 月球基地
     level-params-harness generate --run <dir>
-    level-params-harness level --run <dir> --level 120
+    level-params-harness tier --run <dir> --tier 3
     level-params-harness check|status|journal|note --run <dir>
 
-The harness generates and checks the parameters; the agent collects the input,
-runs the steps and reports the result.
+The harness generates and checks one parameter set per difficulty tier; the
+agent collects the theme name, runs the steps and reports the result.
 """
 import argparse
 import datetime
@@ -80,22 +80,13 @@ def sha(data):
 def cmd_init(a):
     if os.path.exists(path(a.run, 'run.json')) and not a.force:
         raise SystemExit(f'error: {a.run} already has run.json (use --force to start over)')
-    counts = {'Normal': a.normal, 'Hard': a.hard, 'ExHard': a.exhard}
-    if a.end < a.start:
-        raise SystemExit('error: --end must be >= --start')
-    if sum(counts.values()) != a.end - a.start + 1:
-        raise SystemExit(f'error: Normal+Hard+ExHard = {sum(counts.values())}, '
-                         f'but {a.start}-{a.end} has {a.end - a.start + 1} levels')
-    for k in ('stack_rate', 'motion_rate'):
-        v = getattr(a, k)
-        if v is not None and not 0 <= v <= 1:
-            raise SystemExit(f'error: --{k.replace("_", "-")} must be between 0 and 1')
-    seed = a.seed or f'{a.start}-{a.end}-{a.normal}-{a.hard}-{a.exhard}'
-    overrides = {k: getattr(a, k) for k in ('stack_rate', 'motion_rate') if getattr(a, k) is not None}
+    theme = a.theme.strip()
+    if not theme:
+        raise SystemExit('error: --theme must not be empty')
     os.makedirs(a.run, exist_ok=True)
     state = {'schema': RUN_SCHEMA, 'created_at': now(),
-             'input': {'start': a.start, 'end': a.end, 'counts': counts, 'seed': seed, 'overrides': overrides},
-             'model_sha256': hashlib.sha256(json.dumps(model().raw, sort_keys=True).encode()).hexdigest()}
+             'input': {'theme': theme, 'seed': a.seed or theme},
+             'model_sha256': model().sha256}
     save(path(a.run, 'run.json'), state)
     journal(a.run, 'init', input=state['input'])
     print(f'initialized {a.run}; next: generate')
@@ -105,32 +96,36 @@ def cmd_generate(a):
     state = load_run(a.run)
     i = state['input']
     try:
-        result = generate.generate(model(), i['start'], i['end'], i['counts'], i['seed'], i['overrides'])
+        result = generate.generate(model(), i['theme'], i['seed'])
     except (ValueError, RuntimeError) as e:
         raise SystemExit(f'error: {e}')
     paths = generate.write_outputs(result, a.run)
-    state['params_sha256'] = sha(result['levels'])
+    state['params_sha256'] = sha(result['tiers'])
     state['generated_at'] = now()
     save(path(a.run, 'run.json'), state)
-    failed = [k for k, v in result['batch_checks'].items() if not v]
+    failed = [k for k, v in result['checks'].items() if not v]
     journal(a.run, 'generate', params_sha256=state['params_sha256'], failed=failed)
-    print(f"{len(result['levels'])} levels, batch checks: {'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
-    for d, v in result['distribution'].items():
-        print(f"  {d}: {v['levels']} levels, T {v['T_min']}-{v['T_max']}, U {v['U_min']}-{v['U_max']}, "
-              f"stacking {v['stacking_levels']}, motion {v['motion_levels']}")
-    for k, p in paths.items():
-        print(f'  {k}: {p}')
+    print(f"{result['theme']}: {len(result['tiers'])} tiers, checks: "
+          f"{'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
+    for r in result['tiers']:
+        print(f"  tier {r['tier']}: score {r['score']}, T {r['T']}, U {r['U']}, targets {len(r['targets'])}, "
+              f"stacking {'yes' if r['stacking']['on'] else 'no'}, motion {'yes' if r['motion'] else 'no'}, "
+              f"duration {r['duration_s']}s")
+    k = result['assets']['kinds']
+    print(f"  assets: {result['assets']['total']} kinds = " + ', '.join(f'{c} {n}' for c, n in k.items()))
+    for name, p in paths.items():
+        print(f'  {name}: {p}')
     return 1 if failed else 0
 
 
-def cmd_level(a):
+def cmd_tier(a):
     result = load(path(a.run, 'level-params.json'))
-    row = next((r for r in result['levels'] if r['level'] == a.level), None)
+    row = next((r for r in result['tiers'] if r['tier'] == a.tier), None)
     if row is None:
-        raise SystemExit(f'error: level {a.level} is not in this batch')
+        raise SystemExit(f'error: tier {a.tier} is not in this result')
     t = dict(zip(generate.COLUMNS, generate.table_row(row)))
     b = row['basis']
-    print(f"level {row['level']}  {row['difficulty']}  form {row['form']} ({row['form_description']})")
+    print(f"tier {row['tier']}  score {row['score']}  form {row['form']} ({row['form_description']})")
     print(f"  objects {row['T']}, kinds {row['U']}; {t['各类物件明细']}")
     print(f"  per kind: {'、'.join(f'{k}×{v}' for k, v in row['per_kind'].items())}")
     print(f"  targets {len(row['targets'])} kinds, {t['目标总数量']} in total: {t['目标种类明细']}")
@@ -153,7 +148,7 @@ def cmd_check(a):
 def cmd_status(a):
     state = load_run(a.run)
     i = state['input']
-    print(f"levels {i['start']}-{i['end']} {i['counts']} seed {i['seed']} overrides {i['overrides'] or 'none'}")
+    print(f"theme {i['theme']} seed {i['seed']}")
     print(f"generated at {state['generated_at']}" if 'generated_at' in state else 'next: generate')
 
 
@@ -181,16 +176,13 @@ def main(argv=None):
         p.set_defaults(fn=fn)
         return p
 
-    p = add('init', cmd_init, 'create a run directory from the designer input')
-    for k in ('start', 'end', 'normal', 'hard', 'exhard'):
-        p.add_argument(f'--{k}', type=int, required=True)
-    p.add_argument('--seed', help='default: derived from the input')
-    p.add_argument('--stack-rate', type=float, help='override: probability that a level stacks (0-1)')
-    p.add_argument('--motion-rate', type=float, help='override: probability of moving vehicles (0-1)')
+    p = add('init', cmd_init, 'create a run directory for one theme')
+    p.add_argument('--theme', required=True, help='theme name')
+    p.add_argument('--seed', help='default: the theme name')
     p.add_argument('--force', action='store_true', help='overwrite an existing run.json')
-    add('generate', cmd_generate, 'generate and check the batch, write level-params.json/csv/xlsx')
-    p = add('level', cmd_level, 'print one level: parameters, basis, checks')
-    p.add_argument('--level', type=int, required=True)
+    add('generate', cmd_generate, 'generate and check one parameter set per tier, write level-params.json/csv/xlsx')
+    p = add('tier', cmd_tier, 'print one tier: parameters, basis, checks')
+    p.add_argument('--tier', type=int, required=True)
     p = add('check', cmd_check, 'recheck a level-params.json')
     p.add_argument('--params', help='default: <run>/level-params.json')
     add('status', cmd_status, 'show the run state and the next step')

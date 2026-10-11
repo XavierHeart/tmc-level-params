@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Generate Stage 1 level parameters for a batch of levels.
+"""Generate one set of level parameters per difficulty tier for a theme.
 
-    python3 scripts/generate.py --start 101 --end 150 \
-        --normal 35 --hard 10 --exhard 5 --seed 20261009 --out <dir>
+    python3 scripts/generate.py --theme 月球基地 --out <dir>
     python3 scripts/generate.py check --params <dir>/level-params.json
 
-Implements 关卡参数生成规则.xlsx (统一生成规则): batch check -> difficulty
-positions -> per level: joint form, T/U, four-category split, targets,
-stacking, motion -> hard checks -> regenerate only failed levels -> batch
-checks. Every statistic comes from model.json (see learn.py). Items are
-placeholders (建筑1, 道具3); binding them to a theme is a later step.
+Tiers come from model.json (see tiers.py): five equal-size tiers of real
+levels, ranked by a score learned from the competitor's Hard/ExHard labels.
+For each tier: joint form, T/U, four-category split, per-kind counts, targets,
+stacking, motion and duration are drawn from real levels of that tier, then
+checked; the drawn parameters must score inside the tier. Items are
+placeholders (建筑1, 道具3); every tier uses the same names, so one asset list
+(the largest count per category) serves the whole theme.
 """
 import argparse
 import collections
@@ -20,27 +21,29 @@ import random
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import tiers  # noqa: E402
+
+SCHEMA = 'tmc-level-params.v2'
+MODEL_SCHEMA = 'tmc-level-params-model.v2'
 CATEGORIES = ('building', 'prop', 'vehicle', 'character')
 ZH = {'building': '建筑', 'prop': '道具', 'vehicle': '载具', 'character': '角色'}
-DIFFICULTIES = ('Normal', 'Hard', 'ExHard')
 MULTIPLE = 3
 T_JITTER = (-6, -3, 0, 3, 6)
 U_JITTER = (-1, 0, 1)
 MAX_TARGET_KINDS = 6
-MAX_FORM_RUN = 3
-POOL_MIN = 8
 ATTEMPTS = 200
 
 
 class Retry(Exception):
-    """This attempt for one level cannot satisfy a rule; draw again."""
+    """This attempt for one tier cannot satisfy a rule; draw again."""
 
 
 def load_model(path):
     with open(path, encoding='utf-8') as f:
         model = json.load(f)
-    if model.get('schema') != 'tmc-level-params-model.v1':
-        sys.exit(f'{path}: not a tmc-level-params-model.v1 file')
+    if model.get('schema') != MODEL_SCHEMA:
+        sys.exit(f'{path}: not a {MODEL_SCHEMA} file (run learn.py)')
     return model
 
 
@@ -49,33 +52,25 @@ class Model:
         self.raw = raw
         self.levels = raw['levels']
         self.forms = {f['id']: f for f in raw['forms']}
+        self.tiers = raw['tiers']
+        self.sha256 = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+        for r in self.levels:
+            r['_tier'] = tiers.tier_of(self.tiers['cuts'], tiers.score(self.tiers, tiers.real_features(r)))
+        self.pool = {t: [r for r in self.levels if r['_tier'] == t] for t in range(1, tiers.TIERS + 1)}
         self.samples = [r for r in self.levels if 'split' in r]
-        self._pools = {}
-        # Form x difficulty weights (form samples are mostly late levels; see 证据与限制).
-        self.form_weights = {d: collections.Counter(r['form'] for r in self.samples if r['difficulty'] == d)
-                             for d in DIFFICULTIES}
-        self.target_categories = {d: collections.Counter(
-            t['category'] for r in self.levels if r['difficulty'] == d for t in r['targets'] if t['category'])
-            for d in DIFFICULTIES}
+        self.form_weights = {t: collections.Counter(r['form'] for r in self.samples if r['_tier'] == t)
+                             for t in self.pool}
+        self.target_categories = {t: collections.Counter(
+            x['category'] for r in self.pool[t] for x in r['targets'] if x['category']) for t in self.pool}
         self.combo_categories = collections.defaultdict(collections.Counter)
         for r in self.levels:
             for c in r['stack']:
                 if c['categories'] and c['size'] in (2, 3):
                     self.combo_categories[c['size']][tuple(c['categories'])] += 1
 
-    def pool(self, difficulty, position):
-        """Same-difficulty levels near `position` in the official order, widened until >= POOL_MIN."""
-        key = (difficulty, position)
-        if key not in self._pools:
-            same = [r for r in self.levels if r['difficulty'] == difficulty]
-            width = 25
-            while True:
-                found = [r for r in same if abs(r['order'] - position) <= width]
-                if len(found) >= POOL_MIN or width > 4000:
-                    break
-                width *= 2
-            self._pools[key] = (found, width)
-        return self._pools[key]
+    def bounds(self, tier):
+        cuts = self.tiers['cuts']
+        return (cuts[tier - 2] if tier > 1 else None, cuts[tier - 1] if tier <= len(cuts) else None)
 
 
 def weighted(rng, counter):
@@ -107,71 +102,32 @@ def largest_remainder(total, weights, minimum):
     return base
 
 
-# ---------- batch level: difficulty positions ----------
-
-def difficulty_sequence(start, end, counts, rng):
-    n = end - start + 1
-    specials = counts['Hard'] + counts['ExHard']
-    best = None
-    for _ in range(500):
-        seq = ['Normal'] * n
-        slots = []
-        for i in range(specials):  # stratified: one special per bucket
-            lo, hi = i * n // specials, (i + 1) * n // specials - 1
-            slots.append(rng.randint(lo, max(lo, hi)))
-        ex = set()
-        for i in range(counts['ExHard']):  # ExHard spread across the specials
-            lo, hi = i * specials // counts['ExHard'], (i + 1) * specials // counts['ExHard'] - 1
-            ex.add(slots[rng.randint(lo, max(lo, hi))])
-        for s in slots:
-            seq[s] = 'ExHard' if s in ex else 'Hard'
-        hard_fail = any(seq[i] == seq[i + 1] == 'ExHard' for i in range(n - 1))
-        soft = sum(seq[i] == 'ExHard' and seq[i + 1] != 'Normal' for i in range(n - 1))
-        score = (hard_fail, soft)
-        if best is None or score < best[0]:
-            best = (score, seq)
-        if score == (False, 0):
-            break
-    return best[1]
-
-
-# ---------- one level ----------
-
 def round3(x):
     return max(MULTIPLE, MULTIPLE * round(x / MULTIPLE))
 
 
-def generate_level(model, level, difficulty, prev_forms, rng, overrides):
-    pool, width = model.pool(difficulty, level)
-    basis = {'pool_size': len(pool), 'pool_window': width}
+# ---------- one tier ----------
 
-    motion_rate = overrides.get('motion_rate')
-    if motion_rate is None:
-        motion_rate = sum(r['motion'] for r in pool) / len(pool)
-    stack_rate = overrides.get('stack_rate')
-    if stack_rate is None:
-        stack_rate = sum(bool(r['stack']) for r in pool) / len(pool)
-    motion = rng.random() < motion_rate
-    stacking = rng.random() < stack_rate
+def generate_tier(model, tier, rng):
+    pool = model.pool[tier]
+    basis = {'pool_size': len(pool)}
+    motion = rng.random() < sum(r['motion'] for r in pool) / len(pool)
+    stacking = rng.random() < sum(bool(r['stack']) for r in pool) / len(pool)
 
-    # Joint form; no run longer than MAX_FORM_RUN.
-    weights = collections.Counter(model.form_weights[difficulty])
-    if len(prev_forms) >= MAX_FORM_RUN and len(set(prev_forms[-MAX_FORM_RUN:])) == 1:
-        weights.pop(prev_forms[-1], None)
-    form = weighted(rng, weights)
+    form = weighted(rng, model.form_weights[tier])
 
-    # T/U: one real pair from the level-segment pool, small variation.
+    # T/U: one real pair from the tier, small variation.
     base = rng.choice(pool)
-    t_jitter, u_jitter = rng.choice(T_JITTER), rng.choice(U_JITTER)
-    T = round3(base['T'] + t_jitter)
+    T = round3(base['T'] + rng.choice(T_JITTER))
+    u_jitter = rng.choice(U_JITTER)
     U = base['U'] + u_jitter
     basis.update(T_base=base['T'], U_base=base['U'], TU_source=base['key'])
 
     # Four-category split from one real sample of the same form (joint, never per field).
     candidates = [r for r in model.samples if r['form'] == form]
-    same_diff = [r for r in candidates if r['difficulty'] == difficulty]
-    if len(same_diff) >= 3:
-        candidates = same_diff
+    same_tier = [r for r in candidates if r['_tier'] == tier]
+    if len(same_tier) >= 3:
+        candidates = same_tier
     if motion:
         candidates = [r for r in candidates if r['split']['vehicle']]
     if not candidates:
@@ -187,16 +143,13 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
     qty_share = {c: sum(split[c]) for c in kind_share}
     cat_triples = largest_remainder(triples, qty_share, {c: kinds[c] for c in kind_share})
 
-    # Targets: kind count and per-target counts from the pool, categories by difficulty.
+    # Targets: kind count and per-target counts from the tier.
     n_targets = min(rng.choice([len(r['targets']) for r in pool if r['targets']] or [3]), MAX_TARGET_KINDS, U)
-    known = [t['count'] for r in pool for t in r['targets'] if t['count']]
-    if len(known) < 10:
-        known = [t['count'] for r in model.levels if r['difficulty'] == difficulty for t in r['targets'] if t['count']]
+    known = [x['count'] for r in pool for x in r['targets'] if x['count']]
     per_cat_targets = collections.Counter()
     targets = []
-    cat_weights = model.target_categories[difficulty]
     for _ in range(n_targets):
-        allowed = collections.Counter({c: w for c, w in cat_weights.items()
+        allowed = collections.Counter({c: w for c, w in model.target_categories[tier].items()
                                        if kinds.get(c, 0) > per_cat_targets[c]})
         if not allowed:
             break
@@ -206,10 +159,10 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
                         'count': round3(rng.choice(known))})
     # A target kind's count is all its placed copies; fit them inside the category quantity.
     for cat in per_cat_targets:
-        cat_t = [t for t in targets if t['category'] == cat]
+        cat_t = [x for x in targets if x['category'] == cat]
         room = cat_triples[cat] - (kinds[cat] - len(cat_t))
-        while sum(t['count'] for t in cat_t) // MULTIPLE > room:
-            big = max(cat_t, key=lambda t: t['count'])
+        while sum(x['count'] for x in cat_t) // MULTIPLE > room:
+            big = max(cat_t, key=lambda x: x['count'])
             if big['count'] == MULTIPLE:
                 raise Retry('targets do not fit category')
             big['count'] -= MULTIPLE
@@ -217,7 +170,7 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
     # Per-kind counts: targets fixed, other kinds follow the sample's kind-size profile.
     per_kind = {}
     for cat in kind_share:
-        fixed = {t['kind']: t['count'] // MULTIPLE for t in targets if t['category'] == cat}
+        fixed = {x['kind']: x['count'] // MULTIPLE for x in targets if x['category'] == cat}
         others = [f'{ZH[cat]}{i}' for i in range(len(fixed) + 1, kinds[cat] + 1)]
         left = cat_triples[cat] - sum(fixed.values())
         units = {}
@@ -230,13 +183,10 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
         for k, v in list(fixed.items()) + list(units.items()):
             per_kind[k] = v * MULTIPLE
 
-    # Stacking: one real stacking structure from the pool, sets rounded to multiples of 3.
+    # Stacking: one real stacking structure from the tier, sets rounded to multiples of 3.
     stack = {'on': False, 'layers': 0, 'combos': []}
     if stacking:
-        stacked = [r for r in pool if r['stack']]
-        if not stacked:
-            stacked = [r for r in model.levels if r['difficulty'] == difficulty and r['stack']]
-        src = rng.choice(stacked)
+        src = rng.choice([r for r in pool if r['stack']])
         basis['stack_source'] = src['key']
         layers = 3 if any(c['size'] >= 3 for c in src['stack']) else 2
         wanted = []
@@ -278,30 +228,26 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
         basis['stack_dropped'] = len(wanted) - len(combos)
         stack = {'on': True, 'layers': layers, 'combos': combos}
 
-    durations = [r['duration_s'] for r in pool if r['duration_s']]
     row = {
-        'level': level, 'difficulty': difficulty, 'form': form,
-        'form_description': model.forms[form]['description'],
+        'tier': tier, 'form': form, 'form_description': model.forms[form]['description'],
         'U': U, 'T': T,
-        'categories': {c: {'kinds': kinds.get(c, 0), 'qty': cat_triples.get(c, 0) * MULTIPLE}
-                       for c in CATEGORIES},
+        'categories': {c: {'kinds': kinds.get(c, 0), 'qty': cat_triples.get(c, 0) * MULTIPLE} for c in CATEGORIES},
         'per_kind': per_kind,
         'targets': targets,
         'stacking': stack,
         'motion': motion,
-        'duration_s': rng.choice(durations) if durations else None,
+        'duration_s': rng.choice([r['duration_s'] for r in pool]),
         'variation': {'T': T - base['T'], 'U': u_jitter},
         'basis': basis,
     }
-    row['checks'] = check_level(row, pool)
+    row['score'] = round(tiers.score(model.tiers, tiers.row_features(row)), 4)
+    row['checks'] = check_tier(row, model.tiers, pool)
     if not all(row['checks'].values()):
-        raise Retry('checks failed: ' + ', '.join(k for k, v in row['checks'].items() if not v))
+        raise Retry('checks failed')
     return row
 
 
-# ---------- checks ----------
-
-def check_level(row, pool=None):
+def check_tier(row, tier_model, pool=None):
     cats = row['categories']
     pk = row['per_kind']
     kinds_ok = sum(c['kinds'] for c in cats.values()) == row['U'] and len(pk) == row['U']
@@ -330,8 +276,11 @@ def check_level(row, pool=None):
     else:
         stack_ok = s['layers'] == 0 and not s['combos']
     motion_ok = not row['motion'] or cats['vehicle']['kinds'] >= 1
+    score = tiers.score(tier_model, tiers.row_features(row))
+    in_tier = tiers.tier_of(tier_model['cuts'], score) == row['tier'] and abs(score - row['score']) < 1e-3
     checks = {'种类加总': kinds_ok and per_cat_ok, '数量加总': qty_ok and per_cat_ok, '数量3倍数': mult_ok,
-              'U不超过T/3': ratio_ok, '目标明细': target_ok, '叠放3倍数': stack_ok, '运动前提': motion_ok}
+              'U不超过T/3': ratio_ok, '目标明细': target_ok, '叠放3倍数': stack_ok, '运动前提': motion_ok,
+              '难度分在档内': in_tier}
     if pool is not None:
         lo_t, hi_t = min(r['T'] for r in pool), max(r['T'] for r in pool)
         lo_u, hi_u = min(r['U'] for r in pool), max(r['U'] for r in pool)
@@ -341,80 +290,69 @@ def check_level(row, pool=None):
 
 
 def signature(row):
-    return json.dumps([row['difficulty'], row['form'], row['T'], row['U'], row['categories'],
-                       row['targets'], row['stacking'], row['motion']], sort_keys=True, ensure_ascii=False)
+    return json.dumps([row['form'], row['T'], row['U'], row['categories'], row['per_kind'], row['targets'],
+                       row['stacking'], row['motion'], row['duration_s']], sort_keys=True, ensure_ascii=False)
 
 
-def check_batch(spec, rows):
-    seq = [r['difficulty'] for r in rows]
-    n = spec['end'] - spec['start'] + 1
-    run, longest = 1, 1
-    for a, b in zip(rows, rows[1:]):
-        run = run + 1 if a['form'] == b['form'] else 1
-        longest = max(longest, run)
+# ---------- theme ----------
+
+def asset_list(rows):
+    """Largest kind count per category over all tiers; every tier uses a prefix of these names."""
+    kinds = {c: max(r['categories'][c]['kinds'] for r in rows) for c in CATEGORIES}
+    return {'kinds': kinds, 'total': sum(kinds.values()),
+            'names': [f'{ZH[c]}{i}' for c in CATEGORIES for i in range(1, kinds[c] + 1)],
+            'used_by_tier': {str(r['tier']): sorted(r['per_kind']) for r in rows}}
+
+
+def check_theme(rows, assets):
+    names = set(assets['names'])
+    scores = [r['score'] for r in rows]
     return {
-        f'总关数={n}': len(rows) == n and [r['level'] for r in rows] == list(range(spec['start'], spec['end'] + 1)),
-        **{f'{d}={spec["counts"][d]}': seq.count(d) == spec['counts'][d] for d in DIFFICULTIES},
-        '无相邻ExHard': not any(a == b == 'ExHard' for a, b in zip(seq, seq[1:])),
-        '全部单关验算通过': all(all(r['checks'].values()) for r in rows),
-        '无完全重复参数行': len({signature(r) for r in rows}) == len(rows),
-        f'同形态连续不超过{MAX_FORM_RUN}关': longest <= MAX_FORM_RUN,
+        f'{tiers.TIERS}档齐全': [r['tier'] for r in rows] == list(range(1, tiers.TIERS + 1)),
+        '全部单档验算通过': all(all(r['checks'].values()) for r in rows),
+        '难度分逐档升高': all(a < b for a, b in zip(scores, scores[1:])),
+        '无完全重复参数': len({signature(r) for r in rows}) == len(rows),
+        '物件都在素材清单内': all(set(r['per_kind']) <= names for r in rows),
     }
 
 
-# ---------- batch ----------
+def tier_model_summary(model):
+    keep = ('method', 'features', 'mean', 'std', 'weights', 'bias', 'cuts', 'cross_validation')
+    return {k: model.tiers[k] for k in keep}
 
-def generate(model, start, end, counts, seed, overrides=None):
-    overrides = overrides or {}
-    if end < start:
-        raise ValueError('end must be >= start')
-    if sum(counts.values()) != end - start + 1:
-        raise ValueError(f'Normal+Hard+ExHard = {sum(counts.values())}, but {start}-{end} has {end - start + 1} levels')
-    seq = difficulty_sequence(start, end, counts, random.Random(f'{seed}:sequence'))
-    rows, seen, prev_forms, attempts = [], set(), [], {}
-    for i, difficulty in enumerate(seq):
-        level = start + i
+
+def generate(model, theme, seed=None):
+    theme = theme.strip()
+    if not theme:
+        raise ValueError('theme must not be empty')
+    seed = seed or theme
+    rows, seen = [], set()
+    for tier in range(1, tiers.TIERS + 1):
         for attempt in range(ATTEMPTS):
-            rng = random.Random(f'{seed}:{level}:{attempt}')
+            rng = random.Random(f'{seed}:tier{tier}:{attempt}')
             try:
-                row = generate_level(model, level, difficulty, prev_forms, rng, overrides)
+                row = generate_tier(model, tier, rng)
             except Retry:
                 continue
             if signature(row) in seen:
                 continue
             break
         else:
-            raise RuntimeError(f'level {level}: no valid parameters after {ATTEMPTS} attempts')
-        attempts[level] = attempt + 1
+            raise RuntimeError(f'tier {tier}: no valid parameters after {ATTEMPTS} attempts')
         row['attempts'] = attempt + 1
         seen.add(signature(row))
-        prev_forms.append(row['form'])
         rows.append(row)
-    spec = {'start': start, 'end': end, 'counts': counts, 'seed': seed, 'overrides': overrides}
+    assets = asset_list(rows)
     return {
-        'schema': 'tmc-level-params.v1',
-        'input': spec,
-        'model_sha256': hashlib.sha256(json.dumps(model.raw, sort_keys=True).encode()).hexdigest(),
-        'levels': rows,
-        'batch_checks': check_batch(spec, rows),
-        'distribution': distribution(rows),
+        'schema': SCHEMA,
+        'theme': theme,
+        'input': {'theme': theme, 'seed': seed},
+        'model_sha256': model.sha256,
+        'tier_model': tier_model_summary(model),
+        'tiers': rows,
+        'assets': assets,
+        'checks': check_theme(rows, assets),
     }
-
-
-def distribution(rows):
-    out = {}
-    for d in DIFFICULTIES:
-        rs = [r for r in rows if r['difficulty'] == d]
-        if not rs:
-            continue
-        T = sorted(r['T'] for r in rs)
-        U = sorted(r['U'] for r in rs)
-        out[d] = {'levels': len(rs), 'T_min': T[0], 'T_median': T[len(T) // 2], 'T_max': T[-1],
-                  'U_min': U[0], 'U_median': U[len(U) // 2], 'U_max': U[-1],
-                  'stacking_levels': sum(r['stacking']['on'] for r in rs),
-                  'motion_levels': sum(r['motion'] for r in rs),
-                  'forms': dict(sorted(collections.Counter(r['form'] for r in rs).items()))}
-    return out
 
 
 # ---------- text and files ----------
@@ -424,10 +362,11 @@ def fmt_duration(sec):
 
 
 def text_targets(row):
-    by_cat = collections.defaultdict(list)
-    for t in row['targets']:
-        by_cat[t['category']].append(f"{t['kind']}×{t['count']}")
-    return '；'.join(f"{ZH[c]}{len(v)}种（{'、'.join(v)}）" for c in CATEGORIES for v in [by_cat.get(c)] if v)
+    by = collections.defaultdict(list)
+    for x in row['targets']:
+        by[x['category']].append(x)
+    return '；'.join(f"{ZH[c]}{len(by[c])}种（{'、'.join(f'{x['kind']}×{x['count']}' for x in by[c])}）"
+                    for c in CATEGORIES if by[c])
 
 
 def text_categories(row):
@@ -438,26 +377,26 @@ def text_stack(row):
     return '；'.join(f"{'+'.join(c['kinds'])}：{c['sets']}套" for c in row['stacking']['combos']) or '无'
 
 
-COLUMNS = ['关卡', '难度', '联合形态', '形态说明', '物件种类总数', '物件数量总数', '目标种类数', '目标总数量', '目标种类明细',
+CHECK_KEYS = ['种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '难度分在档内', '经验范围']
+COLUMNS = ['档位', '难度分', '联合形态', '形态说明', '物件种类总数', '物件数量总数', '目标种类数', '目标总数量', '目标种类明细',
            '建筑种类', '建筑数量', '道具种类', '道具数量', '载具种类', '载具数量', '角色种类', '角色数量', '各类物件明细',
            '是否叠放', '叠放类型', '叠放种类数', '叠放套数总计', '叠放种类套数明细', '是否包含运动载具', '时长',
-           '竞品基准T/U', '变异量T/U', 'T/U来源关卡', '四类来源关卡', '叠放来源关卡',
-           '种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '经验范围', '总验收']
+           '竞品基准T/U', '变异量T/U', 'T/U来源关卡', '四类来源关卡', '叠放来源关卡', *CHECK_KEYS, '总验收']
 
 
 def table_row(row):
     c, s, b, ck = row['categories'], row['stacking'], row['basis'], row['checks']
     yn = lambda v: '是' if v else '否'
     ok = lambda v: '通过' if v else '失败'
-    return [row['level'], row['difficulty'], row['form'], row['form_description'], row['U'], row['T'],
-            len(row['targets']), sum(t['count'] for t in row['targets']), text_targets(row),
+    return [row['tier'], row['score'], row['form'], row['form_description'], row['U'], row['T'],
+            len(row['targets']), sum(x['count'] for x in row['targets']), text_targets(row),
             c['building']['kinds'], c['building']['qty'], c['prop']['kinds'], c['prop']['qty'],
             c['vehicle']['kinds'], c['vehicle']['qty'], c['character']['kinds'], c['character']['qty'],
             text_categories(row), yn(s['on']), f"{s['layers']}层" if s['on'] else '无', len(s['combos']),
             sum(x['sets'] for x in s['combos']), text_stack(row), yn(row['motion']), fmt_duration(row['duration_s']),
             f"{b['T_base']}/{b['U_base']}", f"{row['variation']['T']:+d}/{row['variation']['U']:+d}",
             b['TU_source'], b['split_source'], b.get('stack_source', ''),
-            *[ok(ck.get(k, True)) for k in COLUMNS[30:38]], ok(all(ck.values()))]
+            *[ok(ck.get(k, True)) for k in CHECK_KEYS], ok(all(ck.values()))]
 
 
 def write_outputs(result, out_dir):
@@ -469,7 +408,7 @@ def write_outputs(result, out_dir):
     with open(paths['csv'], 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
         w.writerow(COLUMNS)
-        for row in result['levels']:
+        for row in result['tiers']:
             w.writerow(table_row(row))
     try:
         import xlsxwriter
@@ -479,31 +418,29 @@ def write_outputs(result, out_dir):
     paths['xlsx'] = os.path.join(out_dir, 'level-params.xlsx')
     wb = xlsxwriter.Workbook(paths['xlsx'])
     head = wb.add_format({'bold': True, 'bg_color': '#DDEBF7', 'border': 1, 'text_wrap': True})
-    ws = wb.add_worksheet('试生成参数')
+    ws = wb.add_worksheet('各档参数')
     ws.write_row(0, 0, COLUMNS, head)
-    for i, row in enumerate(result['levels'], 1):
+    for i, row in enumerate(result['tiers'], 1):
         ws.write_row(i, 0, table_row(row))
-    ws.freeze_panes(1, 2)
+    ws.freeze_panes(1, 1)
     ws.set_column(0, len(COLUMNS) - 1, 12)
     for col in (8, 17, 22):
         ws.set_column(col, col, 44)
-    ws2 = wb.add_worksheet('批次验收')
-    ws2.write_row(0, 0, ['检查项', '结果'], head)
-    for i, (k, v) in enumerate(result['batch_checks'].items(), 1):
-        ws2.write_row(i, 0, [k, '通过' if v else '失败'])
-    r0 = len(result['batch_checks']) + 2
-    keys = ['levels', 'T_min', 'T_median', 'T_max', 'U_min', 'U_median', 'U_max', 'stacking_levels', 'motion_levels', 'forms']
-    ws2.write_row(r0, 0, ['难度', '关数', '物件数量最小', '物件数量中位', '物件数量最大', '物件种类最小', '物件种类中位',
-                          '物件种类最大', '叠放关数', '运动载具关数', '形态分布'], head)
-    for i, (d, v) in enumerate(result['distribution'].items(), r0 + 1):
-        ws2.write_row(i, 0, [d] + [json.dumps(v[k], ensure_ascii=False) if k == 'forms' else v[k] for k in keys])
-    ws2.set_column(0, 10, 16)
-    ws3 = wb.add_worksheet('输入')
-    for i, (k, v) in enumerate([('关卡范围', f"{result['input']['start']}–{result['input']['end']}"),
-                                *[(d, result['input']['counts'][d]) for d in DIFFICULTIES],
-                                ('随机种子', str(result['input']['seed'])),
-                                ('机制覆盖', json.dumps(result['input']['overrides'], ensure_ascii=False)),
-                                ('model sha256', result['model_sha256'])]):
+    a = result['assets']
+    ws2 = wb.add_worksheet('素材清单')
+    ws2.write_row(0, 0, ['类别', '种类数', '占位名'], head)
+    for i, c in enumerate(CATEGORIES, 1):
+        ws2.write_row(i, 0, [ZH[c], a['kinds'][c], '、'.join(n for n in a['names'] if n.startswith(ZH[c]))])
+    ws2.write_row(len(CATEGORIES) + 1, 0, ['合计', a['total'], ''])
+    ws2.set_column(0, 1, 10)
+    ws2.set_column(2, 2, 80)
+    ws3 = wb.add_worksheet('验算')
+    ws3.write_row(0, 0, ['检查项', '结果'], head)
+    for i, (k, v) in enumerate(result['checks'].items(), 1):
+        ws3.write_row(i, 0, [k, '通过' if v else '失败'])
+    r0 = len(result['checks']) + 2
+    for i, (k, v) in enumerate([('主题', result['theme']), ('随机种子', str(result['input']['seed'])),
+                                ('model sha256', result['model_sha256'])], r0):
         ws3.write_row(i, 0, [k, v])
     ws3.set_column(0, 1, 30)
     wb.close()
@@ -511,14 +448,18 @@ def write_outputs(result, out_dir):
 
 
 def recheck(path):
+    """Re-run every check on a written file; uses the tier model stored in the file."""
     with open(path, encoding='utf-8') as f:
         result = json.load(f)
+    if result.get('schema') != SCHEMA:
+        return [f'not a {SCHEMA} file']
     failures = []
-    for row in result['levels']:
-        checks = check_level(row)
-        failures += [f"level {row['level']}: {k}" for k, v in checks.items() if not v]
-    batch = check_batch(result['input'], result['levels'])
-    failures += [f'batch: {k}' for k, v in batch.items() if not v]
+    for row in result['tiers']:
+        failures += [f"tier {row['tier']}: {k}" for k, v in check_tier(row, result['tier_model']).items() if not v]
+    theme = check_theme(result['tiers'], asset_list(result['tiers']))
+    failures += [f'theme: {k}' for k, v in theme.items() if not v]
+    if asset_list(result['tiers']) != result['assets']:
+        failures.append('theme: assets do not match the tiers')
     return failures
 
 
@@ -534,30 +475,19 @@ def main(argv=None):
         print('ok' if not failures else f'{len(failures)} failure(s)')
         return 1 if failures else 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--start', type=int, required=True)
-    ap.add_argument('--end', type=int, required=True)
-    ap.add_argument('--normal', type=int, required=True)
-    ap.add_argument('--hard', type=int, required=True)
-    ap.add_argument('--exhard', type=int, required=True)
-    ap.add_argument('--seed', default='auto', help="'auto' derives one from the input")
-    ap.add_argument('--stack-rate', type=float, help='override: probability a level stacks')
-    ap.add_argument('--motion-rate', type=float, help='override: probability a level has moving vehicles')
+    ap.add_argument('--theme', required=True)
+    ap.add_argument('--seed', help='default: the theme name')
     ap.add_argument('--model', default=os.path.join(HERE, 'model.json'))
     ap.add_argument('--out', required=True)
     args = ap.parse_args(argv)
-    counts = {'Normal': args.normal, 'Hard': args.hard, 'ExHard': args.exhard}
-    seed = args.seed
-    if seed == 'auto':
-        seed = f'{args.start}-{args.end}-{args.normal}-{args.hard}-{args.exhard}'
-    overrides = {k: v for k, v in (('stack_rate', args.stack_rate), ('motion_rate', args.motion_rate)) if v is not None}
     try:
-        result = generate(Model(load_model(args.model)), args.start, args.end, counts, seed, overrides)
+        result = generate(Model(load_model(args.model)), args.theme, args.seed)
     except (ValueError, RuntimeError) as e:
         print(f'error: {e}', file=sys.stderr)
         return 2
     paths = write_outputs(result, args.out)
-    bad = [k for k, v in result['batch_checks'].items() if not v]
-    print(f"{len(result['levels'])} levels, batch checks: {'all passed' if not bad else 'FAILED ' + ', '.join(bad)}")
+    bad = [k for k, v in result['checks'].items() if not v]
+    print(f"{result['theme']}: {len(result['tiers'])} tiers, checks: {'all passed' if not bad else 'FAILED ' + ', '.join(bad)}")
     for k, p in paths.items():
         print(f'  {k}: {p}')
     return 0 if not bad else 1

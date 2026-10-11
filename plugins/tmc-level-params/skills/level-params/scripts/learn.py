@@ -24,6 +24,9 @@ import random
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tiers  # noqa: E402
+
 CATEGORIES = ('building', 'prop', 'vehicle', 'character')
 CATEGORY_ZH = {'building': '建筑', 'prop': '道具', 'vehicle': '载具', 'character': '角色'}
 
@@ -280,7 +283,7 @@ def learn(data_dir):
         rec['form'] = f'F{rank[label] + 1}'
 
     return {
-        'schema': 'tmc-level-params-model.v1',
+        'schema': 'tmc-level-params-model.v2',
         'source': {name: {'sha256': sha256(path)} for name, path in files.items()},
         'definitions': {
             'T': 'all placed rows of the level, decor included (matches 关卡参数生成规则.xlsx)',
@@ -294,6 +297,7 @@ def learn(data_dir):
         },
         'category_prefixes': PREFIX_CATEGORY,
         'forms': forms,
+        'tiers': tiers.learn(records),
         'levels': records,
     }
 
@@ -310,6 +314,9 @@ def main():
     print(f"levels: {len(model['levels'])}, split samples: {samples}, wrote {args.out}")
     for form in model['forms']:
         print(f"  {form['id']} {form['description']} ({form['samples']})")
+    cv = model['tiers']['cross_validation']
+    print(f"  tiers: cuts {model['tiers']['cuts']}, AUC Hard/ExHard vs Normal {cv['auc_hard_or_exhard_vs_normal']}, "
+          f"ExHard vs Hard {cv['auc_exhard_vs_hard']}")
 
 
 if __name__ == '__main__':
