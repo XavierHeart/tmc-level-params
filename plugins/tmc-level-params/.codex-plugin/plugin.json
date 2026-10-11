@@ -1,7 +1,7 @@
 {
   "name": "tmc-level-params",
-  "version": "0.1.0+codex.20261011045333",
-  "description": "Level difficulty parameter generator for level designers: from a level range and Normal/Hard/ExHard counts, generate per-level totals, kinds, four-category split, targets, stacking, moving vehicles and duration from competitor mainline statistics.",
+  "version": "0.2.0+codex.20261011051253",
+  "description": "Level difficulty parameter harness for level designers: from a level range and Normal/Hard/ExHard counts, generate per-level totals, kinds, four-category split, targets, stacking, moving vehicles and duration from competitor mainline statistics, score the difficulty curve against the competitor, and finalize after an agent review.",
   "author": {
     "name": "XavierHeart"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Level Params",
     "shortDescription": "Generate per-level difficulty parameters for a batch of levels.",
-    "longDescription": "For level designers, not production. Input a level range and how many Normal, Hard and ExHard levels it holds. The generator places the difficulties, then draws each level's joint form, total count T, kind count U, building/prop/vehicle/character split, targets, stacking structure, moving vehicles and duration from real competitor levels near the same position, checks every level and the batch, and writes level-params.json/csv/xlsx. Items are placeholders (building 1, prop 3); level production binds them to a theme. A local web page draws difficulty curves against the competitor levels, re-draws single levels and exports xlsx. Standard library only; xlsx export needs xlsxwriter.",
+    "longDescription": "For level designers, not production. Input a level range and how many Normal, Hard and ExHard levels it holds. The harness places the difficulties, draws each level from real competitor levels near the same position, checks every level and the batch, scores eight difficulty pressures on one 0-100 scale, draws the composite and per-pressure curves next to the competitor levels with the same numbers (PNG), and lists flagged levels (out of range, big jumps, tiers not rising, a jumpy curve). The agent views the charts, re-draws flagged levels or keeps them with a written reason; finalize accepts only a review bound to the current parameters and weights, then writes level-params.json/csv/xlsx with the review record. Items are placeholders (building 1, prop 3); level production binds them to a theme. Needs Pillow; xlsx export needs xlsxwriter.",
     "developerName": "XavierHeart",
     "category": "Productivity",
     "capabilities": [
@@ -18,7 +18,7 @@
     ],
     "defaultPrompt": [
       "生成 101–150 关的难度参数：Normal 35 关，Hard 10 关，ExHard 5 关。",
-      "打开难度曲线网页，看这一批和竞品同编号关卡的对比。",
+      "把 120 关重抽一次，看综合难度曲线有没有变平。",
       "复查这份 level-params.json 是否还通过全部检查。"
     ],
     "brandColor": "#3A6EA5"

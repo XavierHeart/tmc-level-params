@@ -1,6 +1,6 @@
 """Pressure dimensions for real and generated levels, on one scale.
 
-Each dimension is a raw value; the viewer turns it into a 0-100 score with the
+Each dimension is a raw value; `score` turns it into a 0-100 score with the
 P10/P90 of all real levels (`baselines`). Generated levels have no layout yet,
 so placement dimensions (density, crowd) and moving vehicles are estimates from
 the same-segment pool and are flagged in `estimated`.
@@ -81,3 +81,56 @@ def baselines(levels, fallback_target):
         p10, p90 = values[int(len(values) * 0.1)], values[int(len(values) * 0.9)]
         out[k] = {'p10': p10, 'p90': p90 if p90 > p10 else p10 + 1}
     return out
+
+
+# ---------- scores on one 0-100 scale (formerly computed in the viewer page) ----------
+
+DEFAULT_WEIGHTS = {d[0]: d[3] for d in DIMENSIONS}
+
+
+def score(key, raw, base):
+    """0 at the real-level P10, 100 at P90, clipped."""
+    if raw is None:
+        return None
+    b = base[key]
+    return max(0.0, min(100.0, (raw - b['p10']) / (b['p90'] - b['p10']) * 100))
+
+
+def composite(raw, base, weights):
+    """Weighted mean of the dimension scores; dimensions without a value are left out."""
+    s = w = 0.0
+    for k in KEYS:
+        v, wt = score(k, raw.get(k), base), weights.get(k, 0)
+        if v is not None and wt > 0:
+            s += v * wt
+            w += wt
+    return s / w if w else None
+
+
+def mean(values):
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def std(values):
+    values = [v for v in values if v is not None]
+    m = mean(values)
+    return (sum((v - m) ** 2 for v in values) / len(values)) ** 0.5 if values else None
+
+
+def jumps(values):
+    """Absolute change between neighbours; None where either side is missing."""
+    return [abs(b - a) if a is not None and b is not None else None for a, b in zip(values, values[1:])]
+
+
+def rolling_median(values, n=5):
+    out = []
+    for i in range(len(values)):
+        w = sorted(v for v in values[max(0, i - n // 2):i + n // 2 + 1] if v is not None)
+        out.append(w[len(w) // 2] if w else None)
+    return out
+
+
+def percentile(values, p):
+    values = sorted(v for v in values if v is not None)
+    return values[min(len(values) - 1, int(len(values) * p))] if values else None
