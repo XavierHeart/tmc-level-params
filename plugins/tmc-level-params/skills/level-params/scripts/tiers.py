@@ -114,7 +114,12 @@ def learn(levels):
     """Fit on every real level, cut five equal tiers, and report how well the score separates the labels."""
     feats = [real_features(r) for r in levels]
     labels = [r['difficulty'] for r in levels]
+    r4 = lambda v: round(v, 4)
     model = fit(feats, [is_hard(y) for y in labels])
+    # Round first: cuts and tiers come from the stored (rounded) model, so generation sees the same tiers.
+    model = {'features': model['features'], 'mean': {k: r4(v) for k, v in model['mean'].items()},
+             'std': {k: r4(v) for k, v in model['std'].items()},
+             'weights': {k: r4(v) for k, v in model['weights'].items()}, 'bias': r4(model['bias'])}
     scores = [score(model, x) for x in feats]
     ordered = sorted(scores)
     cuts = [ordered[int(len(ordered) * q / TIERS)] for q in range(1, TIERS)]
@@ -123,16 +128,15 @@ def learn(levels):
     composition = collections.defaultdict(collections.Counter)
     for s, y in zip(scores, labels):
         composition[tier_of(cuts, s)][y] += 1
-    r4 = lambda v: round(v, 4)
     return {
         'method': 'class-balanced L2 logistic regression: P(label is Hard or ExHard) from six level parameters; '
                   'score = log-odds; five equal-size tiers by score quantiles',
         'features': model['features'],
-        'mean': {k: r4(v) for k, v in model['mean'].items()},
-        'std': {k: r4(v) for k, v in model['std'].items()},
-        'weights': {k: r4(v) for k, v in model['weights'].items()},
-        'bias': r4(model['bias']),
-        'cuts': [r4(c) for c in cuts],
+        'mean': model['mean'],
+        'std': model['std'],
+        'weights': model['weights'],
+        'bias': model['bias'],
+        'cuts': cuts,
         'range': [r4(ordered[0]), r4(ordered[-1])],
         'cross_validation': {
             'folds': FOLDS,

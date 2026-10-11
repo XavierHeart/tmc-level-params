@@ -28,6 +28,12 @@ class TierModelTests(unittest.TestCase):
                  for k in range(1, tiers.TIERS + 1)]
         self.assertEqual(share, sorted(share), share)      # more Hard/ExHard in every higher tier
 
+    def test_stored_composition_matches_generation_tiers(self):
+        import collections
+        comp = {str(t): dict(sorted(collections.Counter(r['difficulty'] for r in MODEL.pool[t]).items()))
+                for t in MODEL.pool}
+        self.assertEqual(comp, MODEL.tiers['composition'])
+
     def test_learning_is_deterministic(self):
         self.assertEqual(tiers.learn(MODEL.levels[:600]), tiers.learn(MODEL.levels[:600]))
 
