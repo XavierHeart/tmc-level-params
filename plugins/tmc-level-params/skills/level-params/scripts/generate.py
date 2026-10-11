@@ -19,9 +19,6 @@ import os
 import random
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pressure  # noqa: E402
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATEGORIES = ('building', 'prop', 'vehicle', 'character')
 ZH = {'building': '建筑', 'prop': '道具', 'vehicle': '载具', 'character': '角色'}
@@ -296,7 +293,6 @@ def generate_level(model, level, difficulty, prev_forms, rng, overrides):
         'variation': {'T': T - base['T'], 'U': u_jitter},
         'basis': basis,
     }
-    row['pressure'] = pressure.generated_pressure(row, pool)
     row['checks'] = check_level(row, pool)
     if not all(row['checks'].values()):
         raise Retry('checks failed: ' + ', '.join(k for k, v in row['checks'].items() if not v))
@@ -368,10 +364,8 @@ def check_batch(spec, rows):
 
 # ---------- batch ----------
 
-def generate(model, start, end, counts, seed, overrides=None, rerolls=None):
-    """rerolls: {level: n} draws that level again with a new stream; other levels keep theirs."""
+def generate(model, start, end, counts, seed, overrides=None):
     overrides = overrides or {}
-    rerolls = {int(k): int(v) for k, v in (rerolls or {}).items() if int(v)}
     if end < start:
         raise ValueError('end must be >= start')
     if sum(counts.values()) != end - start + 1:
@@ -381,8 +375,7 @@ def generate(model, start, end, counts, seed, overrides=None, rerolls=None):
     for i, difficulty in enumerate(seq):
         level = start + i
         for attempt in range(ATTEMPTS):
-            stream = f'{seed}:{level}:r{rerolls[level]}' if level in rerolls else f'{seed}:{level}'
-            rng = random.Random(f'{stream}:{attempt}')
+            rng = random.Random(f'{seed}:{level}:{attempt}')
             try:
                 row = generate_level(model, level, difficulty, prev_forms, rng, overrides)
             except Retry:
@@ -398,8 +391,6 @@ def generate(model, start, end, counts, seed, overrides=None, rerolls=None):
         prev_forms.append(row['form'])
         rows.append(row)
     spec = {'start': start, 'end': end, 'counts': counts, 'seed': seed, 'overrides': overrides}
-    if rerolls:
-        spec['rerolls'] = {str(k): v for k, v in sorted(rerolls.items())}
     return {
         'schema': 'tmc-level-params.v1',
         'input': spec,

@@ -5,14 +5,13 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 import generate  # noqa: E402
 import learn  # noqa: E402
-import pressure  # noqa: E402
 
 MODEL = generate.Model(generate.load_model(HERE / 'model.json'))
 BATCH = {'Normal': 35, 'Hard': 10, 'ExHard': 5}
 
 
-def run(start=101, end=150, counts=BATCH, seed=20261009, rerolls=None, **overrides):
-    return generate.generate(MODEL, start, end, dict(counts), seed, overrides, rerolls)
+def run(start=101, end=150, counts=BATCH, seed=20261009, **overrides):
+    return generate.generate(MODEL, start, end, dict(counts), seed, overrides)
 
 
 class LevelParamsTests(unittest.TestCase):
@@ -75,22 +74,6 @@ class LevelParamsTests(unittest.TestCase):
         res = run(seed='ovr', stack_rate=0.0, motion_rate=1.0)
         self.assertFalse(any(r['stacking']['on'] for r in res['levels']))
         self.assertTrue(all(r['motion'] for r in res['levels']))
-
-    def test_reroll_changes_only_that_level(self):
-        res = run(rerolls={'120': 1})
-        self.assertEqual(res['input']['rerolls'], {'120': 1})
-        changed = [a['level'] for a, b in zip(self.result['levels'], res['levels'])
-                   if generate.signature(a) != generate.signature(b)]
-        self.assertIn(120, changed)
-        self.assertLessEqual(len(changed), 3, changed)  # later levels move only if the form-run rule fires
-
-    def test_pressure_fields(self):
-        for row in self.result['levels']:
-            self.assertEqual(set(row['pressure']), set(pressure.KEYS))
-            self.assertEqual(row['pressure']['N'], row['T'])
-            self.assertEqual(row['pressure']['M'] == 0, not row['motion'] or row['pressure']['M'] == 0)
-        base = pressure.baselines(MODEL.levels, 9)
-        self.assertTrue(all(base[k]['p90'] > base[k]['p10'] for k in pressure.KEYS))
 
     def test_cli_writes_and_rechecks(self):
         with tempfile.TemporaryDirectory() as out:
