@@ -30,6 +30,11 @@ CJK_FONTS = ['/System/Library/Fonts/Hiragino Sans GB.ttc', '/System/Library/Font
 
 
 def _setup():
+    if not os.environ.get('MPLCONFIGDIR'):
+        # Sandboxed agents often cannot write ~/.matplotlib; keep matplotlib's cache in a writable place.
+        import tempfile
+        os.environ['MPLCONFIGDIR'] = os.path.join(tempfile.gettempdir(), 'level-params-matplotlib')
+        os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
     try:
         import matplotlib
     except ImportError:

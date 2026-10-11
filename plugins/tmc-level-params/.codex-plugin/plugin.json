@@ -1,6 +1,6 @@
 {
   "name": "tmc-level-params",
-  "version": "0.5.0+codex.20261011060256",
+  "version": "0.5.1+codex.20261011060704",
   "description": "Level difficulty parameter harness for level designers: from a theme name, generate one checked parameter set per difficulty tier (five tiers learned from the competitor difficulty labels) plus one shared asset list.",
   "author": {
     "name": "XavierHeart"
