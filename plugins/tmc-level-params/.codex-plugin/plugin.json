@@ -1,0 +1,26 @@
+{
+  "name": "tmc-level-params",
+  "version": "0.1.0+codex.20261011045333",
+  "description": "Level difficulty parameter generator for level designers: from a level range and Normal/Hard/ExHard counts, generate per-level totals, kinds, four-category split, targets, stacking, moving vehicles and duration from competitor mainline statistics.",
+  "author": {
+    "name": "XavierHeart"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Level Params",
+    "shortDescription": "Generate per-level difficulty parameters for a batch of levels.",
+    "longDescription": "For level designers, not production. Input a level range and how many Normal, Hard and ExHard levels it holds. The generator places the difficulties, then draws each level's joint form, total count T, kind count U, building/prop/vehicle/character split, targets, stacking structure, moving vehicles and duration from real competitor levels near the same position, checks every level and the batch, and writes level-params.json/csv/xlsx. Items are placeholders (building 1, prop 3); level production binds them to a theme. A local web page draws difficulty curves against the competitor levels, re-draws single levels and exports xlsx. Standard library only; xlsx export needs xlsxwriter.",
+    "developerName": "XavierHeart",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "生成 101–150 关的难度参数：Normal 35 关，Hard 10 关，ExHard 5 关。",
+      "打开难度曲线网页，看这一批和竞品同编号关卡的对比。",
+      "复查这份 level-params.json 是否还通过全部检查。"
+    ],
+    "brandColor": "#3A6EA5"
+  }
+}

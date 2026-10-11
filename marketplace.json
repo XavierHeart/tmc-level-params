@@ -1,0 +1,20 @@
+{
+  "name": "tmc-level-params",
+  "interface": {
+    "displayName": "TMC Level Params"
+  },
+  "plugins": [
+    {
+      "name": "tmc-level-params",
+      "source": {
+        "source": "local",
+        "path": "./plugins/tmc-level-params"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
