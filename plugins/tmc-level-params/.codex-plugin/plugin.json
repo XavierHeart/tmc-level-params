@@ -1,6 +1,6 @@
 {
   "name": "tmc-level-params",
-  "version": "0.4.1+codex.20261011055310",
+  "version": "0.5.0+codex.20261011060256",
   "description": "Level difficulty parameter harness for level designers: from a theme name, generate one checked parameter set per difficulty tier (five tiers learned from the competitor difficulty labels) plus one shared asset list.",
   "author": {
     "name": "XavierHeart"
@@ -18,7 +18,7 @@
     ],
     "defaultPrompt": [
       "给\"月球基地\"主题生成 5 个难度档位的参数。",
-      "看一下第 5 档的参数和依据。",
+      "画出这个主题的总览图，看 5 组参数在竞品整体难度中的位置。",
       "复查这份 level-params.json 是否还通过全部检查。"
     ],
     "brandColor": "#3A6EA5"

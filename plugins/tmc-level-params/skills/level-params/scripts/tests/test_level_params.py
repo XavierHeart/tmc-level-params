@@ -131,6 +131,15 @@ class HarnessTests(unittest.TestCase):
         self.assertIn('assets:', out)
         self.assertIn('tier 5', self.run_h('tier', '--run', r, '--tier', 5)[1])
         self.assertEqual(self.run_h('check', '--run', r)[0], 0)
+        try:
+            import matplotlib  # noqa: F401
+        except ImportError:
+            matplotlib = None
+        if matplotlib:
+            code, out = self.run_h('overview', '--run', r)
+            self.assertEqual(code, 0, out)
+            self.assertTrue((r / 'overview.png').stat().st_size > 50_000)
+            self.assertEqual(out.count('tier '), 5)
         with self.assertRaises(SystemExit):
             self.run_h('init', '--run', r, '--theme', '巨木森林')       # no silent overwrite
         with self.assertRaises(SystemExit):

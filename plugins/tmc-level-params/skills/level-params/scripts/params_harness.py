@@ -4,6 +4,7 @@
     level-params-harness init --run <dir> --theme 月球基地
     level-params-harness generate --run <dir>
     level-params-harness tier --run <dir> --tier 3
+    level-params-harness overview --run <dir>       # picture: where the 5 sets sit in the competitor range
     level-params-harness check|status|journal|note --run <dir>
 
 The harness generates and checks one parameter set per difficulty tier; the
@@ -137,6 +138,20 @@ def cmd_tier(a):
     print(f"  checks: {'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
 
 
+def cmd_overview(a):
+    import overview
+    result = load(path(a.run, 'level-params.json'))
+    if result.get('model_sha256') != model().sha256:
+        raise SystemExit('error: level-params.json was made with another model.json: run generate again')
+    out = path(a.run, 'overview.png')
+    positions = overview.draw(model(), result, out)
+    journal(a.run, 'overview', positions=positions)
+    for p in positions:
+        print(f"  tier {p['tier']}: score {p['score']:+.2f}, above {p['percentile_overall']}% of all competitor "
+              f"levels and {p['percentile_in_tier']}% of its tier")
+    print(f'  picture: {out}')
+
+
 def cmd_check(a):
     failures = generate.recheck(a.params or path(a.run, 'level-params.json'))
     for f in failures:
@@ -183,6 +198,7 @@ def main(argv=None):
     add('generate', cmd_generate, 'generate and check one parameter set per tier, write level-params.json/csv/xlsx')
     p = add('tier', cmd_tier, 'print one tier: parameters, basis, checks')
     p.add_argument('--tier', type=int, required=True)
+    add('overview', cmd_overview, 'draw overview.png: the 5 sets against the competitor tiers (needs matplotlib)')
     p = add('check', cmd_check, 'recheck a level-params.json')
     p.add_argument('--params', help='default: <run>/level-params.json')
     add('status', cmd_status, 'show the run state and the next step')
