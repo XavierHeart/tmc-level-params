@@ -1,15 +1,15 @@
 {
   "name": "tmc-level-params",
-  "version": "0.5.1+codex.20261011060704",
-  "description": "Level difficulty parameter harness for level designers: from a theme name, generate one checked parameter set per difficulty tier (five tiers learned from the competitor difficulty labels) plus one shared asset list.",
+  "version": "0.6.0+codex.20261012070732",
+  "description": "Level difficulty parameter harness for level designers: from a batch of theme + difficulty tier inputs (five tiers learned from the competitor difficulty labels), generate and check one parameter set per level, print every parameter, and draw the batch difficulty against the competitor.",
   "author": {
     "name": "XavierHeart"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Level Params",
-    "shortDescription": "Generate per-tier difficulty parameters for a theme.",
-    "longDescription": "For level designers, not production. Input a theme name. Five difficulty tiers are learned from the competitor mainline data: a class-balanced logistic model scores how much a level looks like the competitor Hard/ExHard levels from six parameters, and the score quantiles cut the real levels into five equal tiers. For each tier the harness draws the joint form, totals, kinds, four-category split, per-kind counts, targets, stacking, moving vehicles and duration from real levels of that tier, checks every rule and that the drawn parameters score inside the tier, and writes level-params.json/csv/xlsx with one asset list shared by all tiers. Items are placeholders (building 1, prop 3). Standard library only; xlsx export needs xlsxwriter.",
+    "shortDescription": "Generate checked parameters for a batch of theme + tier levels.",
+    "longDescription": "For level designers, not production. Input a batch of levels, each a theme and a difficulty tier 1-5. Five tiers are learned from the competitor mainline data: a class-balanced logistic model scores how much a level looks like the competitor Hard/ExHard levels from six parameters, and the score quantiles cut the real levels into five equal tiers. For each level the harness draws the joint form, totals, kinds, four-category split, per-kind counts, targets, stacking, moving vehicles and duration from real levels of that tier and checks every rule and that the drawn parameters score inside the tier; the same theme and tier always give the same level. show prints every parameter; overview draws the batch difficulty curve on a 0-100 % competitor ruler with each parameter against its tier range; files are level-params.json/csv/xlsx with one asset list per theme. Items are placeholders (building 1, prop 3). xlsx export needs xlsxwriter; the picture needs matplotlib.",
     "developerName": "XavierHeart",
     "category": "Productivity",
     "capabilities": [
@@ -17,9 +17,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "给\"月球基地\"主题生成 5 个难度档位的参数。",
-      "画出这个主题的总览图，看 5 组参数在竞品整体难度中的位置。",
-      "复查这份 level-params.json 是否还通过全部检查。"
+      "生成这一批关卡的参数：月球基地 1 档、冰雪小镇 2 档、巨木森林 3 档。",
+      "展示这一批的全部参数。",
+      "画出这一批关卡的难度图。"
     ],
     "brandColor": "#3A6EA5"
   }

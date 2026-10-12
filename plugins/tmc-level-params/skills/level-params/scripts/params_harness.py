@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Level-parameter harness: deterministic steps around generate.py, driven by the agent.
 
-    level-params-harness init --run <dir> --theme 月球基地
+    level-params-harness init --run <dir> --item 月球基地:3 --item 冰雪小镇:5   # or --batch batch.csv
     level-params-harness generate --run <dir>
-    level-params-harness tier --run <dir> --tier 3
-    level-params-harness overview --run <dir>       # picture: where the 5 sets sit in the competitor range
+    level-params-harness show --run <dir> [--index 2]    # every parameter of every level
+    level-params-harness overview --run <dir>             # picture: the batch's difficulty
     level-params-harness check|status|journal|note --run <dir>
 
-The harness generates and checks one parameter set per difficulty tier; the
-agent collects the theme name, runs the steps and reports the result.
+One input line is one level: a theme and a difficulty tier (1 easiest .. 5
+hardest). The harness generates and checks the parameters; the agent collects
+the input, runs the steps and reports the result.
 """
 import argparse
 import datetime
@@ -21,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import generate  # noqa: E402
 
-RUN_SCHEMA = 'level-params-run.v1'
+RUN_SCHEMA = 'level-params-run.v2'
 
 _MODEL = None
 
@@ -43,10 +44,8 @@ def path(run, *parts):
     return os.path.join(run, *parts)
 
 
-def load(file, default=None):
+def load(file):
     if not os.path.exists(file):
-        if default is not None:
-            return default
         raise SystemExit(f'error: missing {file}')
     with open(file, encoding='utf-8') as f:
         return json.load(f)
@@ -68,8 +67,15 @@ def journal(run, command, **detail):
 def load_run(run):
     state = load(path(run, 'run.json'))
     if state.get('schema') != RUN_SCHEMA:
-        raise SystemExit(f'error: {run}/run.json is not {RUN_SCHEMA}')
+        raise SystemExit(f'error: {run}/run.json is not {RUN_SCHEMA} (start a new run directory)')
     return state
+
+
+def load_result(run):
+    result = load(path(run, 'level-params.json'))
+    if result.get('model_sha256') != model().sha256:
+        raise SystemExit('error: level-params.json was made with another model.json: run generate again')
+    return result
 
 
 def sha(data):
@@ -81,74 +87,98 @@ def sha(data):
 def cmd_init(a):
     if os.path.exists(path(a.run, 'run.json')) and not a.force:
         raise SystemExit(f'error: {a.run} already has run.json (use --force to start over)')
-    theme = a.theme.strip()
-    if not theme:
-        raise SystemExit('error: --theme must not be empty')
+    try:
+        items = (generate.read_batch(a.batch) if a.batch else []) + [generate.parse_item(x) for x in a.item]
+        generate.check_items(items)
+    except (ValueError, OSError) as e:
+        raise SystemExit(f'error: {e}')
     os.makedirs(a.run, exist_ok=True)
-    state = {'schema': RUN_SCHEMA, 'created_at': now(),
-             'input': {'theme': theme, 'seed': a.seed or theme},
+    state = {'schema': RUN_SCHEMA, 'created_at': now(), 'input': {'items': items, 'seed': a.seed},
              'model_sha256': model().sha256}
     save(path(a.run, 'run.json'), state)
     journal(a.run, 'init', input=state['input'])
-    print(f'initialized {a.run}; next: generate')
+    print(f"initialized {a.run}: {len(items)} level(s): " + ', '.join(f"{i['theme']}:{i['tier']}" for i in items))
+    print('next: generate')
 
 
 def cmd_generate(a):
     state = load_run(a.run)
-    i = state['input']
     try:
-        result = generate.generate(model(), i['theme'], i['seed'])
+        result = generate.generate(model(), state['input']['items'], state['input']['seed'])
     except (ValueError, RuntimeError) as e:
         raise SystemExit(f'error: {e}')
     paths = generate.write_outputs(result, a.run)
-    state['params_sha256'] = sha(result['tiers'])
+    state['params_sha256'] = sha(result['levels'])
     state['generated_at'] = now()
     save(path(a.run, 'run.json'), state)
     failed = [k for k, v in result['checks'].items() if not v]
     journal(a.run, 'generate', params_sha256=state['params_sha256'], failed=failed)
-    print(f"{result['theme']}: {len(result['tiers'])} tiers, checks: "
-          f"{'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
-    for r in result['tiers']:
-        print(f"  tier {r['tier']}: score {r['score']}, T {r['T']}, U {r['U']}, targets {len(r['targets'])}, "
-              f"stacking {'yes' if r['stacking']['on'] else 'no'}, motion {'yes' if r['motion'] else 'no'}, "
-              f"duration {r['duration_s']}s")
-    k = result['assets']['kinds']
-    print(f"  assets: {result['assets']['total']} kinds = " + ', '.join(f'{c} {n}' for c, n in k.items()))
+    print(f"{len(result['levels'])} level(s), checks: {'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
+    for r in result['levels']:
+        print(f"  {r['index']}. {r['theme']} tier {r['tier']}: score {r['score']:+.2f}, T {r['T']}, U {r['U']}, "
+              f"targets {len(r['targets'])}, stacking {'yes' if r['stacking']['on'] else 'no'}, "
+              f"motion {'yes' if r['motion'] else 'no'}, duration {r['duration_s']}s")
+    for theme, x in result['assets'].items():
+        print(f"  assets {theme} (tiers {', '.join(map(str, x['tiers']))}): {x['total']} kinds = "
+              + ', '.join(f'{c} {n}' for c, n in x['kinds'].items()))
     for name, p in paths.items():
         print(f'  {name}: {p}')
     return 1 if failed else 0
 
 
-def cmd_tier(a):
-    result = load(path(a.run, 'level-params.json'))
-    row = next((r for r in result['tiers'] if r['tier'] == a.tier), None)
-    if row is None:
-        raise SystemExit(f'error: tier {a.tier} is not in this result')
-    t = dict(zip(generate.COLUMNS, generate.table_row(row)))
-    b = row['basis']
-    print(f"tier {row['tier']}  score {row['score']}  form {row['form']} ({row['form_description']})")
-    print(f"  objects {row['T']}, kinds {row['U']}; {t['各类物件明细']}")
-    print(f"  per kind: {'、'.join(f'{k}×{v}' for k, v in row['per_kind'].items())}")
-    print(f"  targets {len(row['targets'])} kinds, {t['目标总数量']} in total: {t['目标种类明细']}")
-    print(f"  stacking {t['叠放类型']}: {t['叠放种类套数明细']}; moving vehicles {t['是否包含运动载具']}; "
-          f"duration {t['时长']}")
-    print(f"  basis: T/U from {b['TU_source']} ({b['T_base']}/{b['U_base']}, change {t['变异量T/U']}); "
-          f"split from {b['split_source']}" + (f"; stacking from {b['stack_source']}" if b.get('stack_source') else ''))
-    failed = [k for k, v in row['checks'].items() if not v]
-    print(f"  checks: {'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
+def show_level(r, p):
+    t = dict(zip(generate.COLUMNS, generate.table_row(r)))
+    b = r['basis']
+    failed = [k for k, v in r['checks'].items() if not v]
+    lines = [
+        f"【第 {r['index']} 关】{r['theme']} · 第 {r['tier']} 档",
+        f"  难度分      {r['score']:+.4f}（竞品全体排位 {p['percentile_overall']}%，本档排位 {p['percentile_in_tier']}%）",
+        f"  联合形态    {r['form']} {r['form_description']}",
+        f"  物件        {r['T']} 个，{r['U']} 种",
+        f"  四类        {t['各类物件明细']}",
+        f"  每种数量    {t['每种物件数量']}",
+        f"  目标        {len(r['targets'])} 种，共 {t['目标总数量']} 个：{t['目标种类明细']}",
+        f"  叠放        {t['叠放类型']}" + (f"，{t['叠放套数总计']} 套：{t['叠放种类套数明细']}" if r['stacking']['on'] else ''),
+        f"  运动载具    {t['是否包含运动载具']}",
+        f"  时长        {t['时长']}（{r['duration_s']} 秒）",
+        f"  依据        T/U 取自 {b['TU_source']}（{b['T_base']}/{b['U_base']}，变化 {t['变异量T/U']}）；"
+        f"四类拆分取自 {b['split_source']}" + (f"；叠放结构取自 {b['stack_source']}" if b.get('stack_source') else ''),
+        f"  验算        {'全部通过' if not failed else '失败：' + '、'.join(failed)}",
+    ]
+    return '\n'.join(lines)
+
+
+def cmd_show(a):
+    import overview
+    result = load_result(a.run)
+    levels = result['levels']
+    if a.index:
+        wanted = set(a.index)
+        missing = wanted - {r['index'] for r in levels}
+        if missing:
+            raise SystemExit(f"error: no level {sorted(missing)}; this run has 1-{len(levels)}")
+        levels = [r for r in levels if r['index'] in wanted]
+    pos = {p['index']: p for p in overview.positions(model(), levels)}
+    print('\n\n'.join(show_level(r, pos[r['index']]) for r in levels))
+    if not a.index:
+        print('\n【素材清单】（同一主题的各关共用占位名）')
+        for theme, x in result['assets'].items():
+            print(f"  {theme}（第 {'、'.join(map(str, x['tiers']))} 档）：建筑 {x['kinds']['building']}、"
+                  f"道具 {x['kinds']['prop']}、载具 {x['kinds']['vehicle']}、角色 {x['kinds']['character']}，"
+                  f"共 {x['total']} 种")
+        failed = [k for k, v in result['checks'].items() if not v]
+        print(f"\n【整体验算】{'全部通过' if not failed else '失败：' + '、'.join(failed)}")
 
 
 def cmd_overview(a):
     import overview
-    result = load(path(a.run, 'level-params.json'))
-    if result.get('model_sha256') != model().sha256:
-        raise SystemExit('error: level-params.json was made with another model.json: run generate again')
+    result = load_result(a.run)
     out = path(a.run, 'overview.png')
-    positions = overview.draw(model(), result, out)
-    journal(a.run, 'overview', positions=positions)
-    for p in positions:
-        print(f"  tier {p['tier']}: score {p['score']:+.2f}, above {p['percentile_overall']}% of all competitor "
-              f"levels and {p['percentile_in_tier']}% of its tier")
+    pos = overview.draw(model(), result, out)
+    journal(a.run, 'overview', positions=pos)
+    for p in pos:
+        print(f"  {p['index']}. {p['theme']} tier {p['tier']}: score {p['score']:+.2f}, above "
+              f"{p['percentile_overall']}% of all competitor levels and {p['percentile_in_tier']}% of its tier")
     print(f'  picture: {out}')
 
 
@@ -163,7 +193,8 @@ def cmd_check(a):
 def cmd_status(a):
     state = load_run(a.run)
     i = state['input']
-    print(f"theme {i['theme']} seed {i['seed']}")
+    print(f"{len(i['items'])} level(s): " + ', '.join(f"{x['theme']}:{x['tier']}" for x in i['items'])
+          + (f"; seed {i['seed']}" if i['seed'] else ''))
     print(f"generated at {state['generated_at']}" if 'generated_at' in state else 'next: generate')
 
 
@@ -191,14 +222,15 @@ def main(argv=None):
         p.set_defaults(fn=fn)
         return p
 
-    p = add('init', cmd_init, 'create a run directory for one theme')
-    p.add_argument('--theme', required=True, help='theme name')
-    p.add_argument('--seed', help='default: the theme name')
+    p = add('init', cmd_init, 'create a run directory for a batch of theme:tier inputs')
+    p.add_argument('--item', action='append', default=[], metavar='THEME:TIER', help='one level; repeatable')
+    p.add_argument('--batch', help='CSV with a header row and columns 主题,档位 (or theme,tier)')
+    p.add_argument('--seed', help='optional; changes every draw of this batch (default: the theme name decides)')
     p.add_argument('--force', action='store_true', help='overwrite an existing run.json')
-    add('generate', cmd_generate, 'generate and check one parameter set per tier, write level-params.json/csv/xlsx')
-    p = add('tier', cmd_tier, 'print one tier: parameters, basis, checks')
-    p.add_argument('--tier', type=int, required=True)
-    add('overview', cmd_overview, 'draw overview.png: the 5 sets against the competitor tiers (needs matplotlib)')
+    add('generate', cmd_generate, 'generate and check every level, write level-params.json/csv/xlsx')
+    p = add('show', cmd_show, 'print every parameter of every level (or of --index N)')
+    p.add_argument('--index', type=int, action='append', help='level number in the batch; repeatable')
+    add('overview', cmd_overview, "draw overview.png: the batch's difficulty against the competitor (needs matplotlib)")
     p = add('check', cmd_check, 'recheck a level-params.json')
     p.add_argument('--params', help='default: <run>/level-params.json')
     add('status', cmd_status, 'show the run state and the next step')

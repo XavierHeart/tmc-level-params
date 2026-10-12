@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Generate one set of level parameters per difficulty tier for a theme.
+"""Generate level parameters for a batch of (theme, tier) inputs, one level each.
 
-    python3 scripts/generate.py --theme 月球基地 --out <dir>
+    python3 scripts/generate.py --item 月球基地:3 --item 冰雪小镇:5 --out <dir>
+    python3 scripts/generate.py --batch batch.csv --out <dir>      # columns 主题,档位
     python3 scripts/generate.py check --params <dir>/level-params.json
 
 Tiers come from model.json (see tiers.py): five equal-size tiers of real
 levels, ranked by a score learned from the competitor's Hard/ExHard labels.
-For each tier: joint form, T/U, four-category split, per-kind counts, targets,
+For one input: joint form, T/U, four-category split, per-kind counts, targets,
 stacking, motion and duration are drawn from real levels of that tier, then
-checked; the drawn parameters must score inside the tier. Items are
-placeholders (建筑1, 道具3); every tier uses the same names, so one asset list
-(the largest count per category) serves the whole theme.
+checked; the drawn parameters must score inside the tier. The draw depends
+only on (theme, tier, seed), so the same input always gives the same level.
+Items are placeholders (建筑1, 道具3); levels of one theme share the names, so
+one asset list per theme (the largest count per category) serves them all.
 """
 import argparse
 import collections
@@ -24,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import tiers  # noqa: E402
 
-SCHEMA = 'tmc-level-params.v2'
+SCHEMA = 'tmc-level-params.v3'
 MODEL_SCHEMA = 'tmc-level-params-model.v2'
 CATEGORIES = ('building', 'prop', 'vehicle', 'character')
 ZH = {'building': '建筑', 'prop': '道具', 'vehicle': '载具', 'character': '角色'}
@@ -294,25 +296,87 @@ def signature(row):
                        row['stacking'], row['motion'], row['duration_s']], sort_keys=True, ensure_ascii=False)
 
 
-# ---------- theme ----------
+# ---------- batch ----------
 
-def asset_list(rows):
-    """Largest kind count per category over all tiers; every tier uses a prefix of these names."""
-    kinds = {c: max(r['categories'][c]['kinds'] for r in rows) for c in CATEGORIES}
-    return {'kinds': kinds, 'total': sum(kinds.values()),
-            'names': [f'{ZH[c]}{i}' for c in CATEGORIES for i in range(1, kinds[c] + 1)],
-            'used_by_tier': {str(r['tier']): sorted(r['per_kind']) for r in rows}}
+def parse_item(text):
+    """'主题:档位' (the last ':' or '：' separates them)."""
+    text = text.strip().replace('：', ':')
+    theme, sep, tier = text.rpartition(':')
+    if not sep or not theme.strip():
+        raise ValueError(f"'{text}': write theme:tier, e.g. 月球基地:3")
+    try:
+        tier = int(tier)
+    except ValueError:
+        raise ValueError(f"'{text}': tier must be a number 1-{tiers.TIERS}")
+    return {'theme': theme.strip(), 'tier': tier}
 
 
-def check_theme(rows, assets):
-    names = set(assets['names'])
-    scores = [r['score'] for r in rows]
+def read_batch(path):
+    """CSV with a header; theme column 主题/theme, tier column 档位/tier."""
+    import csv
+    with open(path, encoding='utf-8-sig', newline='') as f:
+        rows = list(csv.DictReader(f))
+    items = []
+    for n, r in enumerate(rows, 2):
+        r = {(k or '').strip(): (v or '').strip() for k, v in r.items()}
+        theme, tier = r.get('主题') or r.get('theme'), r.get('档位') or r.get('tier')
+        if not theme and not tier:
+            continue
+        if not theme or not tier:
+            raise ValueError(f'{path} line {n}: needs both 主题 and 档位')
+        items.append(parse_item(f'{theme}:{tier}'))
+    return items
+
+
+def check_items(items):
+    if not items:
+        raise ValueError('no input: give at least one theme:tier')
+    seen = set()
+    for it in items:
+        if not 1 <= it['tier'] <= tiers.TIERS:
+            raise ValueError(f"{it['theme']}:{it['tier']}: tier must be 1-{tiers.TIERS}")
+        key = (it['theme'], it['tier'])
+        if key in seen:
+            raise ValueError(f"{it['theme']}:{it['tier']} appears twice; the same input always gives the same level")
+        seen.add(key)
+
+
+def item_seed(theme, seed=None):
+    return f'{theme}:{seed}' if seed else theme
+
+
+def generate_level(model, theme, tier, seed=None):
+    s = item_seed(theme, seed)
+    for attempt in range(ATTEMPTS):
+        rng = random.Random(f'{s}:tier{tier}:{attempt}')
+        try:
+            row = generate_tier(model, tier, rng)
+        except Retry:
+            continue
+        row['attempts'] = attempt + 1
+        return row
+    raise RuntimeError(f'{theme}:{tier}: no valid parameters after {ATTEMPTS} attempts')
+
+
+def asset_lists(levels):
+    """Per theme: largest kind count per category over that theme's levels."""
+    out = {}
+    for theme in dict.fromkeys(r['theme'] for r in levels):
+        rows = [r for r in levels if r['theme'] == theme]
+        kinds = {c: max(r['categories'][c]['kinds'] for r in rows) for c in CATEGORIES}
+        out[theme] = {'kinds': kinds, 'total': sum(kinds.values()),
+                      'names': [f'{ZH[c]}{i}' for c in CATEGORIES for i in range(1, kinds[c] + 1)],
+                      'tiers': sorted(r['tier'] for r in rows)}
+    return out
+
+
+def check_batch(levels, assets):
+    keys = [(r['theme'], r['tier']) for r in levels]
     return {
-        f'{tiers.TIERS}档齐全': [r['tier'] for r in rows] == list(range(1, tiers.TIERS + 1)),
-        '全部单档验算通过': all(all(r['checks'].values()) for r in rows),
-        '难度分逐档升高': all(a < b for a, b in zip(scores, scores[1:])),
-        '无完全重复参数': len({signature(r) for r in rows}) == len(rows),
-        '物件都在素材清单内': all(set(r['per_kind']) <= names for r in rows),
+        '每关验算通过': all(all(r['checks'].values()) for r in levels),
+        '没有重复的输入': len(set(keys)) == len(keys),
+        '序号连续': [r['index'] for r in levels] == list(range(1, len(levels) + 1)),
+        '物件都在本主题素材清单内': all(set(r['per_kind']) <= set(assets[r['theme']]['names']) for r in levels),
     }
 
 
@@ -321,37 +385,22 @@ def tier_model_summary(model):
     return {k: model.tiers[k] for k in keep}
 
 
-def generate(model, theme, seed=None):
-    theme = theme.strip()
-    if not theme:
-        raise ValueError('theme must not be empty')
-    seed = seed or theme
-    rows, seen = [], set()
-    for tier in range(1, tiers.TIERS + 1):
-        for attempt in range(ATTEMPTS):
-            rng = random.Random(f'{seed}:tier{tier}:{attempt}')
-            try:
-                row = generate_tier(model, tier, rng)
-            except Retry:
-                continue
-            if signature(row) in seen:
-                continue
-            break
-        else:
-            raise RuntimeError(f'tier {tier}: no valid parameters after {ATTEMPTS} attempts')
-        row['attempts'] = attempt + 1
-        seen.add(signature(row))
-        rows.append(row)
-    assets = asset_list(rows)
+def generate(model, items, seed=None):
+    items = [{'theme': it['theme'].strip(), 'tier': int(it['tier'])} for it in items]
+    check_items(items)
+    levels = []
+    for n, it in enumerate(items, 1):
+        row = generate_level(model, it['theme'], it['tier'], seed)
+        levels.append({'index': n, 'theme': it['theme'], **row})
+    assets = asset_lists(levels)
     return {
         'schema': SCHEMA,
-        'theme': theme,
-        'input': {'theme': theme, 'seed': seed},
+        'input': {'items': items, 'seed': seed},
         'model_sha256': model.sha256,
         'tier_model': tier_model_summary(model),
-        'tiers': rows,
+        'levels': levels,
         'assets': assets,
-        'checks': check_theme(rows, assets),
+        'checks': check_batch(levels, assets),
     }
 
 
@@ -377,26 +426,31 @@ def text_stack(row):
     return '；'.join(f"{'+'.join(c['kinds'])}：{c['sets']}套" for c in row['stacking']['combos']) or '无'
 
 
+def text_per_kind(row):
+    return '、'.join(f'{k}×{v}' for k, v in row['per_kind'].items())
+
+
 CHECK_KEYS = ['种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '难度分在档内', '经验范围']
-COLUMNS = ['档位', '难度分', '联合形态', '形态说明', '物件种类总数', '物件数量总数', '目标种类数', '目标总数量', '目标种类明细',
-           '建筑种类', '建筑数量', '道具种类', '道具数量', '载具种类', '载具数量', '角色种类', '角色数量', '各类物件明细',
-           '是否叠放', '叠放类型', '叠放种类数', '叠放套数总计', '叠放种类套数明细', '是否包含运动载具', '时长',
-           '竞品基准T/U', '变异量T/U', 'T/U来源关卡', '四类来源关卡', '叠放来源关卡', *CHECK_KEYS, '总验收']
+COLUMNS = ['序号', '主题', '档位', '难度分', '联合形态', '形态说明', '物件种类总数', '物件数量总数', '目标种类数', '目标总数量',
+           '目标种类明细', '建筑种类', '建筑数量', '道具种类', '道具数量', '载具种类', '载具数量', '角色种类', '角色数量',
+           '各类物件明细', '每种物件数量', '是否叠放', '叠放类型', '叠放种类数', '叠放套数总计', '叠放种类套数明细',
+           '是否包含运动载具', '时长', '竞品基准T/U', '变异量T/U', 'T/U来源关卡', '四类来源关卡', '叠放来源关卡',
+           *CHECK_KEYS, '总验收']
 
 
 def table_row(row):
     c, s, b, ck = row['categories'], row['stacking'], row['basis'], row['checks']
     yn = lambda v: '是' if v else '否'
     ok = lambda v: '通过' if v else '失败'
-    return [row['tier'], row['score'], row['form'], row['form_description'], row['U'], row['T'],
+    return [row['index'], row['theme'], row['tier'], row['score'], row['form'], row['form_description'], row['U'], row['T'],
             len(row['targets']), sum(x['count'] for x in row['targets']), text_targets(row),
             c['building']['kinds'], c['building']['qty'], c['prop']['kinds'], c['prop']['qty'],
             c['vehicle']['kinds'], c['vehicle']['qty'], c['character']['kinds'], c['character']['qty'],
-            text_categories(row), yn(s['on']), f"{s['layers']}层" if s['on'] else '无', len(s['combos']),
-            sum(x['sets'] for x in s['combos']), text_stack(row), yn(row['motion']), fmt_duration(row['duration_s']),
-            f"{b['T_base']}/{b['U_base']}", f"{row['variation']['T']:+d}/{row['variation']['U']:+d}",
-            b['TU_source'], b['split_source'], b.get('stack_source', ''),
-            *[ok(ck.get(k, True)) for k in CHECK_KEYS], ok(all(ck.values()))]
+            text_categories(row), text_per_kind(row), yn(s['on']), f"{s['layers']}层" if s['on'] else '无',
+            len(s['combos']), sum(x['sets'] for x in s['combos']), text_stack(row), yn(row['motion']),
+            fmt_duration(row['duration_s']), f"{b['T_base']}/{b['U_base']}",
+            f"{row['variation']['T']:+d}/{row['variation']['U']:+d}", b['TU_source'], b['split_source'],
+            b.get('stack_source', ''), *[ok(ck.get(k, True)) for k in CHECK_KEYS], ok(all(ck.values()))]
 
 
 def write_outputs(result, out_dir):
@@ -408,7 +462,7 @@ def write_outputs(result, out_dir):
     with open(paths['csv'], 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
         w.writerow(COLUMNS)
-        for row in result['tiers']:
+        for row in result['levels']:
             w.writerow(table_row(row))
     try:
         import xlsxwriter
@@ -418,28 +472,26 @@ def write_outputs(result, out_dir):
     paths['xlsx'] = os.path.join(out_dir, 'level-params.xlsx')
     wb = xlsxwriter.Workbook(paths['xlsx'])
     head = wb.add_format({'bold': True, 'bg_color': '#DDEBF7', 'border': 1, 'text_wrap': True})
-    ws = wb.add_worksheet('各档参数')
+    ws = wb.add_worksheet('关卡参数')
     ws.write_row(0, 0, COLUMNS, head)
-    for i, row in enumerate(result['tiers'], 1):
+    for i, row in enumerate(result['levels'], 1):
         ws.write_row(i, 0, table_row(row))
-    ws.freeze_panes(1, 1)
+    ws.freeze_panes(1, 3)
     ws.set_column(0, len(COLUMNS) - 1, 12)
-    for col in (8, 17, 22):
+    for col in (10, 19, 20, 25):
         ws.set_column(col, col, 44)
-    a = result['assets']
     ws2 = wb.add_worksheet('素材清单')
-    ws2.write_row(0, 0, ['类别', '种类数', '占位名'], head)
-    for i, c in enumerate(CATEGORIES, 1):
-        ws2.write_row(i, 0, [ZH[c], a['kinds'][c], '、'.join(n for n in a['names'] if n.startswith(ZH[c]))])
-    ws2.write_row(len(CATEGORIES) + 1, 0, ['合计', a['total'], ''])
-    ws2.set_column(0, 1, 10)
-    ws2.set_column(2, 2, 80)
+    ws2.write_row(0, 0, ['主题', '用到的档位', '建筑', '道具', '载具', '角色', '合计'], head)
+    for i, (theme, a) in enumerate(result['assets'].items(), 1):
+        ws2.write_row(i, 0, [theme, '、'.join(map(str, a['tiers'])), *[a['kinds'][c] for c in CATEGORIES], a['total']])
+    ws2.set_column(0, 6, 12)
     ws3 = wb.add_worksheet('验算')
     ws3.write_row(0, 0, ['检查项', '结果'], head)
     for i, (k, v) in enumerate(result['checks'].items(), 1):
         ws3.write_row(i, 0, [k, '通过' if v else '失败'])
     r0 = len(result['checks']) + 2
-    for i, (k, v) in enumerate([('主题', result['theme']), ('随机种子', str(result['input']['seed'])),
+    for i, (k, v) in enumerate([('输入', '；'.join(f"{it['theme']}:{it['tier']}" for it in result['input']['items'])),
+                                ('随机种子', str(result['input']['seed'] or '（主题名）')),
                                 ('model sha256', result['model_sha256'])], r0):
         ws3.write_row(i, 0, [k, v])
     ws3.set_column(0, 1, 30)
@@ -454,12 +506,13 @@ def recheck(path):
     if result.get('schema') != SCHEMA:
         return [f'not a {SCHEMA} file']
     failures = []
-    for row in result['tiers']:
-        failures += [f"tier {row['tier']}: {k}" for k, v in check_tier(row, result['tier_model']).items() if not v]
-    theme = check_theme(result['tiers'], asset_list(result['tiers']))
-    failures += [f'theme: {k}' for k, v in theme.items() if not v]
-    if asset_list(result['tiers']) != result['assets']:
-        failures.append('theme: assets do not match the tiers')
+    for row in result['levels']:
+        failures += [f"level {row['index']} {row['theme']}:{row['tier']}: {k}"
+                     for k, v in check_tier(row, result['tier_model']).items() if not v]
+    assets = asset_lists(result['levels'])
+    failures += [f'batch: {k}' for k, v in check_batch(result['levels'], assets).items() if not v]
+    if assets != result['assets']:
+        failures.append('batch: assets do not match the levels')
     return failures
 
 
@@ -475,19 +528,21 @@ def main(argv=None):
         print('ok' if not failures else f'{len(failures)} failure(s)')
         return 1 if failures else 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--theme', required=True)
-    ap.add_argument('--seed', help='default: the theme name')
+    ap.add_argument('--item', action='append', default=[], help='theme:tier, repeatable')
+    ap.add_argument('--batch', help='CSV with columns 主题,档位')
+    ap.add_argument('--seed', help='default: none (the theme name alone decides the draw)')
     ap.add_argument('--model', default=os.path.join(HERE, 'model.json'))
     ap.add_argument('--out', required=True)
     args = ap.parse_args(argv)
     try:
-        result = generate(Model(load_model(args.model)), args.theme, args.seed)
-    except (ValueError, RuntimeError) as e:
+        items = (read_batch(args.batch) if args.batch else []) + [parse_item(x) for x in args.item]
+        result = generate(Model(load_model(args.model)), items, args.seed)
+    except (ValueError, RuntimeError, OSError) as e:
         print(f'error: {e}', file=sys.stderr)
         return 2
     paths = write_outputs(result, args.out)
     bad = [k for k, v in result['checks'].items() if not v]
-    print(f"{result['theme']}: {len(result['tiers'])} tiers, checks: {'all passed' if not bad else 'FAILED ' + ', '.join(bad)}")
+    print(f"{len(result['levels'])} levels, checks: {'all passed' if not bad else 'FAILED ' + ', '.join(bad)}")
     for k, p in paths.items():
         print(f'  {k}: {p}')
     return 0 if not bad else 1

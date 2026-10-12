@@ -1,6 +1,6 @@
 # TMC 关卡难度参数生成器
 
-给策划用的 Codex 插件，按 harness 流程运行。策划只输入主题名，插件为这个主题在 5 个难度档位上各生成一组参数：
+给策划用的 Codex 插件，按 harness 流程运行。策划输入一批"主题 + 难度档位"（每条一关），插件为每一关生成一组参数：
 
 - 联合形态；
 - 物件总数、物件种类数；
@@ -10,7 +10,7 @@
 - 是否有运动载具；
 - 时长。
 
-同时给出 5 档共用的素材清单（四类各需要几种）。难度档位从竞品数据学出：用竞品自己的 Hard/ExHard 标签训练难度分，再按难度分把竞品关卡等分成 5 档。
+难度档位共 5 档，从竞品数据学出：用竞品自己的 Hard/ExHard 标签训练难度分，再按难度分把竞品关卡等分成 5 档。插件还能在终端展示全部参数，并画出这一批关卡的难度图。
 
 物件用占位名（建筑1、道具3）。关卡生产（`tmc-level-designer-plugin`）读取输出的 `level-params.json`，再把占位名换成具体主题的物件。
 
@@ -31,17 +31,19 @@ cd tmc-level-params
 在 Codex 里：
 
 ```text
-使用 $level-params，给"月球基地"主题生成各难度档位的参数。
+使用 $level-params，生成这一批关卡的参数并画难度图：
+月球基地 1 档、冰雪小镇 2 档、巨木森林 3 档、海底城市 2 档、月球基地 4 档
 ```
 
 也可以直接运行 harness：
 
 ```bash
 H=plugins/tmc-level-params/skills/level-params/scripts/level-params-harness
-$H init --run out/月球基地 --theme 月球基地
-$H generate --run out/月球基地          # 5 档参数 + 素材清单，验算，写出 json/csv/xlsx
-$H tier --run out/月球基地 --tier 5     # 看一档
-$H overview --run out/月球基地          # 总览图：5 组参数在竞品整体难度中的位置
+$H init --run out/批次1 --item 月球基地:1 --item 冰雪小镇:2 --item 巨木森林:3
+$H init --run out/批次2 --batch batch.csv     # 或者用 csv：表头 主题,档位
+$H generate --run out/批次1        # 逐关生成并验算，写出 json/csv/xlsx
+$H show --run out/批次1            # 在终端展示全部参数（--index 2 只看第 2 关）
+$H overview --run out/批次1        # 难度图：这一批关卡在竞品整体难度中的位置
 ```
 
 运行目录和执行流程见 [SKILL.md](plugins/tmc-level-params/skills/level-params/SKILL.md)。难度档位的学习方法、生成方法和统计口径见 [references/method.md](plugins/tmc-level-params/skills/level-params/references/method.md)。
@@ -55,7 +57,7 @@ $H overview --run out/月球基地          # 总览图：5 组参数在竞品�
 | `.../scripts/generate.py` | 参数生成和验算 |
 | `.../scripts/learn.py` | 从竞品数据学习，生成 `model.json` |
 | `.../scripts/tiers.py` | 难度分模型和 5 档切分 |
-| `.../scripts/overview.py` | 总览图 |
+| `.../scripts/overview.py` | 难度图 |
 | `.../scripts/model.json` | 学习结果（竞品原始数据不放进仓库） |
 | `.../scripts/tests/` | 测试 |
 
