@@ -1,6 +1,6 @@
 {
   "name": "tmc-level-params",
-  "version": "0.6.0+codex.20261012070732",
+  "version": "0.6.1+codex.20261013054959",
   "description": "Level difficulty parameter harness for level designers: from a batch of theme + difficulty tier inputs (five tiers learned from the competitor difficulty labels), generate and check one parameter set per level, print every parameter, and draw the batch difficulty against the competitor.",
   "author": {
     "name": "XavierHeart"

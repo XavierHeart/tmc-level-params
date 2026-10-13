@@ -84,8 +84,12 @@ def draw(model, result, out):
     xs = list(range(1, n + 1))
     labels = [f"{r['index']}. {r['theme']}·{r['tier']}档" for r in levels]
     width = min(max(11, 0.55 * n + 4), 40)
-    fig = plt.figure(figsize=(width, 14), dpi=130)
-    grid = fig.add_gridspec(5, 2, height_ratios=[1.3, 0.22, 1, 1, 1], hspace=0.55, wspace=0.15)
+    rotate = n > 6
+    fig = plt.figure(figsize=(width, 14 if rotate else 12.5), dpi=130)
+    # Rotated level labels need a spacer row under the top panel.
+    ratios = [1.3, 0.22, 1, 1, 1] if rotate else [1.3, 1, 1, 1]
+    first = len(ratios) - 3
+    grid = fig.add_gridspec(len(ratios), 2, height_ratios=ratios, hspace=0.55, wspace=0.15)
 
     ax = fig.add_subplot(grid[0, :])
     for i in range(5):
@@ -103,13 +107,13 @@ def draw(model, result, out):
     ax.set_xlim(0.4, n + 0.6)
     ax.set_ylim(0, 100)
     ax.set_yticks(range(0, 101, 20), [f'{v}%' for v in range(0, 101, 20)])
-    ax.set_xticks(xs, labels, rotation=30 if n > 6 else 0, ha='right' if n > 6 else 'center', fontsize=9)
+    ax.set_xticks(xs, labels, rotation=30 if rotate else 0, ha='right' if rotate else 'center', fontsize=9)
     ax.set_ylabel(f'难度排位（竞品 {len(model.levels)} 关中\n难度分低于它的比例）')
     ax.set_title(f'这一批 {n} 关的难度（红点 = 每一关在竞品整体中的排位；0% 最简单，100% 最难）', fontsize=13)
     ax.spines[['top', 'right']].set_visible(False)
 
     for k, (key, label, real_value, row_value) in enumerate(PANELS):
-        ax = fig.add_subplot(grid[2 + k // 2, k % 2])
+        ax = fig.add_subplot(grid[first + k // 2, k % 2])
         ref = {t: [real_value(r) for r in model.pool[t]] for t in range(1, 6)}
         for x, r in zip(xs, levels):
             vals = ref[r['tier']]
