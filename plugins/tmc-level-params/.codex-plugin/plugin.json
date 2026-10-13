@@ -1,7 +1,7 @@
 {
   "name": "tmc-level-params",
-  "version": "0.6.1+codex.20261013054959",
-  "description": "Level difficulty parameter harness for level designers: from a batch of theme + difficulty tier inputs (five tiers learned from the competitor difficulty labels), generate and check one parameter set per level, print every parameter, and draw the batch difficulty against the competitor.",
+  "version": "0.7.0+codex.20261013061434",
+  "description": "Level difficulty parameter harness for level designers: from a batch of theme + difficulty tier inputs (five tiers learned from the competitor difficulty labels), generate and check one parameter set per level, name every asset slot to fit its theme (agent-written, harness-checked), print every parameter, and draw the batch difficulty against the competitor.",
   "author": {
     "name": "XavierHeart"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Level Params",
     "shortDescription": "Generate checked parameters for a batch of theme + tier levels.",
-    "longDescription": "For level designers, not production. Input a batch of levels, each a theme and a difficulty tier 1-5. Five tiers are learned from the competitor mainline data: a class-balanced logistic model scores how much a level looks like the competitor Hard/ExHard levels from six parameters, and the score quantiles cut the real levels into five equal tiers. For each level the harness draws the joint form, totals, kinds, four-category split, per-kind counts, targets, stacking, moving vehicles and duration from real levels of that tier and checks every rule and that the drawn parameters score inside the tier; the same theme and tier always give the same level. show prints every parameter; overview draws the batch difficulty curve on a 0-100 % competitor ruler with each parameter against its tier range; files are level-params.json/csv/xlsx with one asset list per theme. Items are placeholders (building 1, prop 3). xlsx export needs xlsxwriter; the picture needs matplotlib.",
+    "longDescription": "For level designers, not production. Input a batch of levels, each a theme and a difficulty tier 1-5. Five tiers are learned from the competitor mainline data: a class-balanced logistic model scores how much a level looks like the competitor Hard/ExHard levels from six parameters, and the score quantiles cut the real levels into five equal tiers. For each level the harness draws the joint form, totals, kinds, four-category split, per-kind counts, targets, stacking, moving vehicles and duration from real levels of that tier and checks every rule and that the drawn parameters score inside the tier; the same theme and tier always give the same level. show prints every parameter; overview draws the batch difficulty curve on a 0-100 % competitor ruler with each parameter against its tier range; files are level-params.json/csv/xlsx with one asset list per theme. Asset slots start as placeholders (building 1, prop 3); the agent names every slot to fit its theme (Chinese name and English id) from a template that lists each slot's role, and names-apply checks the names and writes them into every output. xlsx export needs xlsxwriter; the picture needs matplotlib.",
     "developerName": "XavierHeart",
     "category": "Productivity",
     "capabilities": [

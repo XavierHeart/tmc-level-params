@@ -4,6 +4,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 import generate  # noqa: E402
+import names  # noqa: E402
 import params_harness  # noqa: E402
 import tiers  # noqa: E402
 
@@ -176,6 +177,96 @@ class HarnessTests(unittest.TestCase):
             self.run_h('init', '--run', r, '--item', '巨木森林:1')       # no silent overwrite
         with self.assertRaises(SystemExit):
             self.run_h('init', '--run', Path(tempfile.mkdtemp()) / 'x', '--item', '月球基地:9')
+
+
+def fill(path, prefix='名'):
+    doc = json.loads(path.read_text())
+    for theme, t in doc['themes'].items():
+        for i, x in enumerate(t['slots'], 1):
+            if not x['name']:
+                x['name'], x['id'] = f'{prefix}{theme[:2]}{i}号', f"{x['category']}_{abs(hash(theme)) % 1000}_{i}"
+    path.write_text(json.dumps(doc, ensure_ascii=False))
+    return doc
+
+
+class NamesTests(unittest.TestCase):
+    def run_h(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = params_harness.main([str(a) for a in argv])
+        return code, out.getvalue()
+
+    def setUp(self):
+        self.r = Path(tempfile.mkdtemp()) / 'run'
+        self.run_h('init', '--run', self.r, '--item', '月球基地:1', '--item', '冰雪小镇:2', '--item', '月球基地:4')
+        self.run_h('generate', '--run', self.r)
+
+    def test_template_lists_every_slot_with_its_role(self):
+        self.run_h('names-template', '--run', self.r)
+        doc = json.loads((self.r / 'names.json').read_text())
+        result = json.loads((self.r / 'level-params.json').read_text())
+        for theme, a in result['assets'].items():
+            self.assertEqual([x['slot'] for x in doc['themes'][theme]['slots']], a['names'])
+        uses = ' '.join(u for t in doc['themes'].values() for x in t['slots'] for u in x['uses'])
+        self.assertIn('目标', uses)
+        stacked = [r for r in result['levels'] if r['stacking']['on']]
+        if stacked:
+            self.assertIn('叠放底座', uses)
+
+    def test_apply_rejects_bad_names_and_writes_good_ones(self):
+        self.run_h('names-template', '--run', self.r)
+        p = self.r / 'names.json'
+        doc = json.loads(p.read_text())
+        slots = doc['themes']['月球基地']['slots']
+        slots[0].update(name='建筑1', id='Bad-Id')
+        slots[1].update(name='月面穹顶', id='lunar_dome')
+        slots[2].update(name='月面穹顶', id='lunar_dome')
+        p.write_text(json.dumps(doc, ensure_ascii=False))
+        code, out = self.run_h('names-apply', '--run', self.r)
+        self.assertEqual(code, 1)
+        for word in ('still a placeholder', 'must be lowercase', 'repeats 建筑2', 'name is empty'):
+            self.assertIn(word, out)
+        slots[0].update(name='', id='')
+        slots[2].update(name='', id='')
+        p.write_text(json.dumps(doc, ensure_ascii=False))
+        fill(p)
+        code, out = self.run_h('names-apply', '--run', self.r)
+        self.assertEqual(code, 0, out)
+        result = json.loads((self.r / 'level-params.json').read_text())
+        self.assertEqual(result['names']['月球基地']['建筑2']['name'], '月面穹顶')
+        self.assertIn('月面穹顶（建筑2）', (self.r / 'level-params.csv').read_text(encoding='utf-8-sig'))
+        self.assertIn('月面穹顶（建筑2）', self.run_h('show', '--run', self.r)[1])
+        self.assertEqual(generate.recheck(str(self.r / 'level-params.json')), [])
+        result['names']['月球基地']['建筑3']['name'] = '月面穹顶'
+        (self.r / 'bad.json').write_text(json.dumps(result, ensure_ascii=False))
+        self.assertTrue(any('repeats' in f for f in generate.recheck(str(self.r / 'bad.json'))))
+
+    def test_regenerate_makes_names_stale_but_template_keeps_them(self):
+        self.run_h('names-template', '--run', self.r)
+        fill(self.r / 'names.json')
+        self.run_h('names-apply', '--run', self.r)
+        state = json.loads((self.r / 'run.json').read_text())
+        state['input']['seed'] = 'other'
+        (self.r / 'run.json').write_text(json.dumps(state, ensure_ascii=False))
+        self.run_h('generate', '--run', self.r)
+        code, out = self.run_h('names-apply', '--run', self.r)
+        self.assertEqual(code, 1)
+        self.assertIn('other parameters', out)
+        self.run_h('names-template', '--run', self.r)
+        doc = json.loads((self.r / 'names.json').read_text())
+        kept = [x for t in doc['themes'].values() for x in t['slots'] if x['name']]
+        self.assertTrue(kept)
+        self.assertTrue(all(x['name'].startswith('名') for x in kept))
+
+    def test_from_reuses_names_of_another_run(self):
+        self.run_h('names-template', '--run', self.r)
+        fill(self.r / 'names.json', prefix='旧')
+        other = Path(tempfile.mkdtemp()) / 'run2'
+        self.run_h('init', '--run', other, '--item', '月球基地:1')
+        self.run_h('generate', '--run', other)
+        self.run_h('names-template', '--run', other, '--from', self.r / 'names.json')
+        doc = json.loads((other / 'names.json').read_text())
+        self.assertTrue(all(x['name'].startswith('旧') for x in doc['themes']['月球基地']['slots']))
 
 
 if __name__ == '__main__':

@@ -358,6 +358,13 @@ def generate_level(model, theme, tier, seed=None):
     raise RuntimeError(f'{theme}:{tier}: no valid parameters after {ATTEMPTS} attempts')
 
 
+def slot_category(slot):
+    for c in CATEGORIES:
+        if slot.startswith(ZH[c]) and slot[len(ZH[c]):].isdigit():
+            return c
+    raise ValueError(f'not a placeholder slot: {slot}')
+
+
 def asset_lists(levels):
     """Per theme: largest kind count per category over that theme's levels."""
     out = {}
@@ -410,11 +417,16 @@ def fmt_duration(sec):
     return f'{sec // 60}:{sec % 60:02d}' if sec else ''
 
 
-def text_targets(row):
+def label(kind, nm=None):
+    """'环形居住舱（建筑1）' when the slot has a name, else the placeholder."""
+    return f"{nm[kind]['name']}（{kind}）" if nm and kind in nm else kind
+
+
+def text_targets(row, nm=None):
     by = collections.defaultdict(list)
     for x in row['targets']:
         by[x['category']].append(x)
-    return '；'.join(f"{ZH[c]}{len(by[c])}种（{'、'.join(f'{x['kind']}×{x['count']}' for x in by[c])}）"
+    return '；'.join(f"{ZH[c]}{len(by[c])}种（{'、'.join(f'{label(x['kind'], nm)}×{x['count']}' for x in by[c])}）"
                     for c in CATEGORIES if by[c])
 
 
@@ -422,12 +434,13 @@ def text_categories(row):
     return '；'.join(f"{ZH[c]}{row['categories'][c]['kinds']}种×{row['categories'][c]['qty']}" for c in CATEGORIES)
 
 
-def text_stack(row):
-    return '；'.join(f"{'+'.join(c['kinds'])}：{c['sets']}套" for c in row['stacking']['combos']) or '无'
+def text_stack(row, nm=None):
+    return '；'.join(f"{'+'.join(label(k, nm) for k in c['kinds'])}：{c['sets']}套"
+                    for c in row['stacking']['combos']) or '无'
 
 
-def text_per_kind(row):
-    return '、'.join(f'{k}×{v}' for k, v in row['per_kind'].items())
+def text_per_kind(row, nm=None):
+    return '、'.join(f'{label(k, nm)}×{v}' for k, v in row['per_kind'].items())
 
 
 CHECK_KEYS = ['种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '难度分在档内', '经验范围']
@@ -438,16 +451,16 @@ COLUMNS = ['序号', '主题', '档位', '难度分', '联合形态', '形态说
            *CHECK_KEYS, '总验收']
 
 
-def table_row(row):
+def table_row(row, nm=None):
     c, s, b, ck = row['categories'], row['stacking'], row['basis'], row['checks']
     yn = lambda v: '是' if v else '否'
     ok = lambda v: '通过' if v else '失败'
     return [row['index'], row['theme'], row['tier'], row['score'], row['form'], row['form_description'], row['U'], row['T'],
-            len(row['targets']), sum(x['count'] for x in row['targets']), text_targets(row),
+            len(row['targets']), sum(x['count'] for x in row['targets']), text_targets(row, nm),
             c['building']['kinds'], c['building']['qty'], c['prop']['kinds'], c['prop']['qty'],
             c['vehicle']['kinds'], c['vehicle']['qty'], c['character']['kinds'], c['character']['qty'],
-            text_categories(row), text_per_kind(row), yn(s['on']), f"{s['layers']}层" if s['on'] else '无',
-            len(s['combos']), sum(x['sets'] for x in s['combos']), text_stack(row), yn(row['motion']),
+            text_categories(row), text_per_kind(row, nm), yn(s['on']), f"{s['layers']}层" if s['on'] else '无',
+            len(s['combos']), sum(x['sets'] for x in s['combos']), text_stack(row, nm), yn(row['motion']),
             fmt_duration(row['duration_s']), f"{b['T_base']}/{b['U_base']}",
             f"{row['variation']['T']:+d}/{row['variation']['U']:+d}", b['TU_source'], b['split_source'],
             b.get('stack_source', ''), *[ok(ck.get(k, True)) for k in CHECK_KEYS], ok(all(ck.values()))]
@@ -459,11 +472,12 @@ def write_outputs(result, out_dir):
     paths = {'json': os.path.join(out_dir, 'level-params.json'), 'csv': os.path.join(out_dir, 'level-params.csv')}
     with open(paths['json'], 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
+    names = result.get('names') or {}
     with open(paths['csv'], 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
         w.writerow(COLUMNS)
         for row in result['levels']:
-            w.writerow(table_row(row))
+            w.writerow(table_row(row, names.get(row['theme'])))
     try:
         import xlsxwriter
     except ImportError:
@@ -475,7 +489,7 @@ def write_outputs(result, out_dir):
     ws = wb.add_worksheet('关卡参数')
     ws.write_row(0, 0, COLUMNS, head)
     for i, row in enumerate(result['levels'], 1):
-        ws.write_row(i, 0, table_row(row))
+        ws.write_row(i, 0, table_row(row, names.get(row['theme'])))
     ws.freeze_panes(1, 3)
     ws.set_column(0, len(COLUMNS) - 1, 12)
     for col in (10, 19, 20, 25):
@@ -485,6 +499,16 @@ def write_outputs(result, out_dir):
     for i, (theme, a) in enumerate(result['assets'].items(), 1):
         ws2.write_row(i, 0, [theme, '、'.join(map(str, a['tiers'])), *[a['kinds'][c] for c in CATEGORIES], a['total']])
     ws2.set_column(0, 6, 12)
+    ws4 = wb.add_worksheet('素材名称')
+    ws4.write_row(0, 0, ['主题', '占位名', '类别', '名称', 'id'], head)
+    i = 1
+    for theme, a in result['assets'].items():
+        for slot in a['names']:
+            nm = names.get(theme, {}).get(slot, {})
+            ws4.write_row(i, 0, [theme, slot, ZH[slot_category(slot)], nm.get('name', '（未命名）'), nm.get('id', '')])
+            i += 1
+    ws4.set_column(0, 2, 12)
+    ws4.set_column(3, 4, 24)
     ws3 = wb.add_worksheet('验算')
     ws3.write_row(0, 0, ['检查项', '结果'], head)
     for i, (k, v) in enumerate(result['checks'].items(), 1):
@@ -513,6 +537,9 @@ def recheck(path):
     failures += [f'batch: {k}' for k, v in check_batch(result['levels'], assets).items() if not v]
     if assets != result['assets']:
         failures.append('batch: assets do not match the levels')
+    if result.get('names'):
+        import names
+        failures += [f'names: {p}' for p in names.check_mapping(result, result['names'])]
     return failures
 
 

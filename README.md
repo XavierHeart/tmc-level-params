@@ -10,9 +10,9 @@
 - 是否有运动载具；
 - 时长。
 
-难度档位共 5 档，从竞品数据学出：用竞品自己的 Hard/ExHard 标签训练难度分，再按难度分把竞品关卡等分成 5 档。插件还能在终端展示全部参数，并画出这一批关卡的难度图。
+难度档位共 5 档，从竞品数据学出：用竞品自己的 Hard/ExHard 标签训练难度分，再按难度分把竞品关卡等分成 5 档。
 
-物件用占位名（建筑1、道具3）。关卡生产（`tmc-level-designer-plugin`）读取输出的 `level-params.json`，再把占位名换成具体主题的物件。
+参数先用占位名（建筑1、道具3）生成；然后 Codex 为每个主题的每种素材起一个和主题强相关的名字（中文名 + 英文 id），插件校验后写进全部输出。插件还能在终端展示全部参数，并画出这一批关卡的难度图。关卡生产（`tmc-level-designer-plugin`）读取输出的 `level-params.json`。
 
 ## 安装
 
@@ -42,6 +42,8 @@ H=plugins/tmc-level-params/skills/level-params/scripts/level-params-harness
 $H init --run out/批次1 --item 月球基地:1 --item 冰雪小镇:2 --item 巨木森林:3
 $H init --run out/批次2 --batch batch.csv     # 或者用 csv：表头 主题,档位
 $H generate --run out/批次1        # 逐关生成并验算，写出 json/csv/xlsx
+$H names-template --run out/批次1  # 列出要起名的素材，写出 names.json（Codex 填名字）
+$H names-apply --run out/批次1     # 校验名字，写进全部输出
 $H show --run out/批次1            # 在终端展示全部参数（--index 2 只看第 2 关）
 $H overview --run out/批次1        # 难度图：这一批关卡在竞品整体难度中的位置
 ```
@@ -58,6 +60,7 @@ $H overview --run out/批次1        # 难度图：这一批关卡在竞品整�
 | `.../scripts/learn.py` | 从竞品数据学习，生成 `model.json` |
 | `.../scripts/tiers.py` | 难度分模型和 5 档切分 |
 | `.../scripts/overview.py` | 难度图 |
+| `.../scripts/names.py` | 素材起名：起名模板和校验 |
 | `.../scripts/model.json` | 学习结果（竞品原始数据不放进仓库） |
 | `.../scripts/tests/` | 测试 |
 

@@ -3,13 +3,16 @@
 
     level-params-harness init --run <dir> --item 月球基地:3 --item 冰雪小镇:5   # or --batch batch.csv
     level-params-harness generate --run <dir>
+    level-params-harness names-template --run <dir> [--from <old names.json>]   # agent fills names.json
+    level-params-harness names-apply --run <dir>          # check names, write them into every output
     level-params-harness show --run <dir> [--index 2]    # every parameter of every level
     level-params-harness overview --run <dir>             # picture: the batch's difficulty
     level-params-harness check|status|journal|note --run <dir>
 
 One input line is one level: a theme and a difficulty tier (1 easiest .. 5
 hardest). The harness generates and checks the parameters; the agent collects
-the input, runs the steps and reports the result.
+the input, names each theme's asset slots to fit the theme, runs the steps and
+reports the result.
 """
 import argparse
 import datetime
@@ -21,6 +24,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import generate  # noqa: E402
+import names  # noqa: E402
 
 RUN_SCHEMA = 'level-params-run.v2'
 
@@ -113,6 +117,8 @@ def cmd_generate(a):
     save(path(a.run, 'run.json'), state)
     failed = [k for k, v in result['checks'].items() if not v]
     journal(a.run, 'generate', params_sha256=state['params_sha256'], failed=failed)
+    print('next: names-template, then name every slot to fit its theme, then names-apply'
+          + (' (names already written are kept for unchanged slots)' if os.path.exists(path(a.run, 'names.json')) else ''))
     print(f"{len(result['levels'])} level(s), checks: {'all passed' if not failed else 'FAILED ' + ', '.join(failed)}")
     for r in result['levels']:
         print(f"  {r['index']}. {r['theme']} tier {r['tier']}: score {r['score']:+.2f}, T {r['T']}, U {r['U']}, "
@@ -126,8 +132,8 @@ def cmd_generate(a):
     return 1 if failed else 0
 
 
-def show_level(r, p):
-    t = dict(zip(generate.COLUMNS, generate.table_row(r)))
+def show_level(r, p, nm=None):
+    t = dict(zip(generate.COLUMNS, generate.table_row(r, nm)))
     b = r['basis']
     failed = [k for k, v in r['checks'].items() if not v]
     lines = [
@@ -159,8 +165,15 @@ def cmd_show(a):
             raise SystemExit(f"error: no level {sorted(missing)}; this run has 1-{len(levels)}")
         levels = [r for r in levels if r['index'] in wanted]
     pos = {p['index']: p for p in overview.positions(model(), levels)}
-    print('\n\n'.join(show_level(r, pos[r['index']]) for r in levels))
+    nm = result.get('names') or {}
+    if not nm:
+        print('（素材还没有命名：下面用占位名。命名见 names-template / names-apply）\n')
+    print('\n\n'.join(show_level(r, pos[r['index']], nm.get(r['theme'])) for r in levels))
     if not a.index:
+        if nm:
+            print('\n【素材名称】')
+            for theme, slots in nm.items():
+                print(f'  {theme}：' + '、'.join(f"{v['name']}（{k}，{v['id']}）" for k, v in slots.items()))
         print('\n【素材清单】（同一主题的各关共用占位名）')
         for theme, x in result['assets'].items():
             print(f"  {theme}（第 {'、'.join(map(str, x['tiers']))} 档）：建筑 {x['kinds']['building']}、"
@@ -168,6 +181,53 @@ def cmd_show(a):
                   f"共 {x['total']} 种")
         failed = [k for k, v in result['checks'].items() if not v]
         print(f"\n【整体验算】{'全部通过' if not failed else '失败：' + '、'.join(failed)}")
+
+
+def cmd_names_template(a):
+    state = load_run(a.run)
+    result = load_result(a.run)
+    file = path(a.run, 'names.json')
+    prior = {}
+    for src in [a.from_ or '', file]:
+        if src and os.path.exists(src):
+            doc = load(src)
+            if doc.get('schema') == names.SCHEMA:
+                for theme, slots in names.mapping(doc).items():
+                    for slot, v in slots.items():
+                        if v['name'] or v['id']:
+                            prior.setdefault(theme, {})[slot] = v
+    if os.path.exists(file) and load(file).get('params_sha256') == state['params_sha256'] and not a.force:
+        raise SystemExit(f'error: {file} already belongs to these parameters; fill it in, or use --force to rebuild it')
+    doc = names.template(result, state['params_sha256'], prior)
+    save(file, doc)
+    todo = sum(1 for t in doc['themes'].values() for x in t['slots'] if not x['name'])
+    journal(a.run, 'names-template', slots=sum(len(t['slots']) for t in doc['themes'].values()), to_fill=todo)
+    print(f'wrote {file}: {todo} slot(s) to name' + (f" ({sum(len(v) for v in prior.values())} pre-filled)" if prior else ''))
+    for theme, t in doc['themes'].items():
+        print(f"  {theme}:")
+        for x in t['slots']:
+            mark = f"{x['name']} / {x['id']}" if x['name'] else 'TO NAME'
+            print(f"    {x['slot']} [{x['category']}] {mark}: {'；'.join(x['uses'])}")
+    print('next: write name and id for every slot in names.json, then names-apply')
+
+
+def cmd_names_apply(a):
+    state = load_run(a.run)
+    result = load_result(a.run)
+    doc = load(path(a.run, 'names.json'))
+    problems = names.validate(doc, result, state['params_sha256'])
+    if problems:
+        for p in problems:
+            print(f'  {p}')
+        journal(a.run, 'names-apply', ok=False, problems=problems)
+        print(f'names not applied: {len(problems)} problem(s)')
+        return 1
+    result['names'] = names.mapping(doc)
+    paths = generate.write_outputs(result, a.run)
+    journal(a.run, 'names-apply', ok=True, themes=list(result['names']))
+    for theme, slots in result['names'].items():
+        print(f"  {theme}: " + '、'.join(f"{v['name']}（{k}）" for k, v in slots.items()))
+    print('names applied to ' + ', '.join(os.path.basename(p) for p in paths.values()))
 
 
 def cmd_overview(a):
@@ -195,7 +255,12 @@ def cmd_status(a):
     i = state['input']
     print(f"{len(i['items'])} level(s): " + ', '.join(f"{x['theme']}:{x['tier']}" for x in i['items'])
           + (f"; seed {i['seed']}" if i['seed'] else ''))
-    print(f"generated at {state['generated_at']}" if 'generated_at' in state else 'next: generate')
+    if 'generated_at' not in state:
+        print('next: generate')
+        return
+    print(f"generated at {state['generated_at']}")
+    result = load(path(a.run, 'level-params.json'))
+    print('names: applied' if result.get('names') else 'names: not applied (next: names-template, fill, names-apply)')
 
 
 def cmd_note(a):
@@ -228,6 +293,10 @@ def main(argv=None):
     p.add_argument('--seed', help='optional; changes every draw of this batch (default: the theme name decides)')
     p.add_argument('--force', action='store_true', help='overwrite an existing run.json')
     add('generate', cmd_generate, 'generate and check every level, write level-params.json/csv/xlsx')
+    p = add('names-template', cmd_names_template, "write names.json: every theme's asset slots with their roles, to fill in")
+    p.add_argument('--from', dest='from_', help='an earlier names.json whose names are kept for the same theme and slot')
+    p.add_argument('--force', action='store_true', help='rebuild names.json even if it belongs to these parameters')
+    add('names-apply', cmd_names_apply, 'check names.json and write the names into level-params.json/csv/xlsx')
     p = add('show', cmd_show, 'print every parameter of every level (or of --index N)')
     p.add_argument('--index', type=int, action='append', help='level number in the batch; repeatable')
     add('overview', cmd_overview, "draw overview.png: the batch's difficulty against the competitor (needs matplotlib)")
