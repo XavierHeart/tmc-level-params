@@ -116,7 +116,9 @@ def draw(model, result, out):
         ax = fig.add_subplot(grid[first + k // 2, k % 2])
         ref = {t: [real_value(r) for r in model.pool[t]] for t in range(1, 6)}
         for x, r in zip(xs, levels):
-            vals = ref[r['tier']]
+            # T and U are generated at count_scale of the competitor; scale the reference the same way.
+            k = r.get('count_scale', 1.0) if key in ('T', 'U') else 1.0
+            vals = [v * k for v in ref[r['tier']]]
             if key == 'motion':
                 ax.bar(x, statistics.mean(vals), width=0.55, color='#C9D3DD', zorder=1)
             else:

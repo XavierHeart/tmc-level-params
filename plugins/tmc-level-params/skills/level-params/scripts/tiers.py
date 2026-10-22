@@ -38,10 +38,14 @@ def real_features(rec):
 
 
 def row_features(row):
-    """Features of a generated parameter row; same definitions as real_features."""
+    """Features of a generated parameter row; same definitions as real_features.
+
+    T and U are taken back to competitor-equivalent values (÷ count_scale), so a
+    scaled-down row scores in the tier it was drawn from."""
     s = row['stacking']
+    k = row.get('count_scale', 1.0)
     riders = sum(c['sets'] * (s['layers'] - 1) for c in s['combos']) if s['on'] else 0
-    return {'log_T': math.log(row['T']), 'U': row['U'], 'target_kinds': len(row['targets']),
+    return {'log_T': math.log(row['T'] / k), 'U': row['U'] / k, 'target_kinds': len(row['targets']),
             'duration_s': row['duration_s'], 'stack_share': riders / row['T'], 'motion': float(bool(row['motion']))}
 
 

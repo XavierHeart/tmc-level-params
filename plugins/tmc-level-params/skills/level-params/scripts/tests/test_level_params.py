@@ -88,6 +88,29 @@ class BatchTests(unittest.TestCase):
                     names = [k for k in row['per_kind'] if k.startswith(generate.ZH[c])]
                     self.assertEqual(sorted(names), sorted(f'{generate.ZH[c]}{i}' for i in range(1, len(names) + 1)))
 
+    def test_counts_are_half_of_the_competitor_tier(self):
+        # 2026-10-22: our sprites are bigger, so T, U and stacking sets are halved; the score uses T/U ÷ 0.5.
+        import statistics
+        for row in self.levels:
+            self.assertEqual(row['count_scale'], generate.COUNT_SCALE)
+            pool = MODEL.pool[row['tier']]
+            self.assertLessEqual(row['T'], max(r['T'] for r in pool) * generate.COUNT_SCALE + 4.5)
+            self.assertLessEqual(row['U'], max(r['U'] for r in pool) * generate.COUNT_SCALE + 1)
+            feats = tiers.row_features(row)
+            self.assertAlmostEqual(feats['U'], row['U'] / generate.COUNT_SCALE)
+        for tier in range(1, 6):
+            rows = [generate.generate_level(MODEL, f'主题{i}', tier) for i in range(15)]
+            median_t = statistics.median(r['T'] for r in rows)
+            pool_t = statistics.median(r['T'] for r in MODEL.pool[tier])
+            self.assertLess(abs(median_t - pool_t * generate.COUNT_SCALE), pool_t * 0.15, (tier, median_t, pool_t))
+
+    def test_old_files_without_count_scale_still_check(self):
+        row = copy.deepcopy(self.levels[0])
+        old = copy.deepcopy(row)
+        del old['count_scale']
+        self.assertNotEqual(tiers.row_features(old)['U'], tiers.row_features(row)['U'])
+        self.assertEqual(tiers.row_features(old)['U'], row['U'])
+
     def test_level_rules(self):
         for row in self.levels:
             self.assertEqual(row['T'] % 3, 0)

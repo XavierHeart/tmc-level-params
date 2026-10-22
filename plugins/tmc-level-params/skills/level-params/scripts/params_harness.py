@@ -140,7 +140,9 @@ def show_level(r, p, nm=None):
         f"【第 {r['index']} 关】{r['theme']} · 第 {r['tier']} 档",
         f"  难度分      {r['score']:+.4f}（竞品全体排位 {p['percentile_overall']}%，本档排位 {p['percentile_in_tier']}%）",
         f"  联合形态    {r['form']} {r['form_description']}",
-        f"  物件        {r['T']} 个，{r['U']} 种",
+        f"  物件        {r['T']} 个，{r['U']} 种"
+        + (f"（竞品等效 {r['T'] / r['count_scale']:.0f} 个，{r['U'] / r['count_scale']:.0f} 种，按 {r['count_scale']:g} 缩减）"
+           if r.get('count_scale', 1.0) != 1.0 else ''),
         f"  四类        {t['各类物件明细']}",
         f"  每种数量    {t['每种物件数量']}",
         f"  目标        {len(r['targets'])} 种，共 {t['目标总数量']} 个：{t['目标种类明细']}",

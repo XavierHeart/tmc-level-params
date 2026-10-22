@@ -35,6 +35,11 @@ T_JITTER = (-6, -3, 0, 3, 6)
 U_JITTER = (-1, 0, 1)
 MAX_TARGET_KINDS = 6
 ATTEMPTS = 200
+# Our sprites cover 1.4-1.9x the competitor's area on the same 40.96 canvas, so a
+# competitor-sized level is too crowded (and too hard). T, U and stacking sets are
+# drawn from the competitor tier, then multiplied by this; scores and ranges are
+# checked on the competitor-equivalent values (count / COUNT_SCALE).
+COUNT_SCALE = 0.5
 
 
 class Retry(Exception):
@@ -118,11 +123,12 @@ def generate_tier(model, tier, rng):
 
     form = weighted(rng, model.form_weights[tier])
 
-    # T/U: one real pair from the tier, small variation.
+    # T/U: one real pair from the tier, small variation, then scaled to our sprite size.
     base = rng.choice(pool)
-    T = round3(base['T'] + rng.choice(T_JITTER))
+    T_eq = round3(base['T'] + rng.choice(T_JITTER))
     u_jitter = rng.choice(U_JITTER)
-    U = base['U'] + u_jitter
+    T = round3(T_eq * COUNT_SCALE)
+    U = int((base['U'] + u_jitter) * COUNT_SCALE + 0.5)
     basis.update(T_base=base['T'], U_base=base['U'], TU_source=base['key'])
 
     # Four-category split from one real sample of the same form (joint, never per field).
@@ -193,7 +199,7 @@ def generate_tier(model, tier, rng):
         layers = 3 if any(c['size'] >= 3 for c in src['stack']) else 2
         wanted = []
         for c in src['stack']:
-            sets = MULTIPLE * round(c['sets'] / MULTIPLE)
+            sets = MULTIPLE * round(c['sets'] * COUNT_SCALE / MULTIPLE)
             if sets:
                 cats = tuple(c['categories']) if c['categories'] and c['size'] == layers else None
                 wanted.append((cats, sets))
@@ -232,14 +238,14 @@ def generate_tier(model, tier, rng):
 
     row = {
         'tier': tier, 'form': form, 'form_description': model.forms[form]['description'],
-        'U': U, 'T': T,
+        'U': U, 'T': T, 'count_scale': COUNT_SCALE,
         'categories': {c: {'kinds': kinds.get(c, 0), 'qty': cat_triples.get(c, 0) * MULTIPLE} for c in CATEGORIES},
         'per_kind': per_kind,
         'targets': targets,
         'stacking': stack,
         'motion': motion,
         'duration_s': rng.choice([r['duration_s'] for r in pool]),
-        'variation': {'T': T - base['T'], 'U': u_jitter},
+        'variation': {'T': T_eq - base['T'], 'U': u_jitter},
         'basis': basis,
     }
     row['score'] = round(tiers.score(model.tiers, tiers.row_features(row)), 4)
@@ -284,10 +290,13 @@ def check_tier(row, tier_model, pool=None):
               'U不超过T/3': ratio_ok, '目标明细': target_ok, '叠放3倍数': stack_ok, '运动前提': motion_ok,
               '难度分在档内': in_tier}
     if pool is not None:
+        # Compare competitor-equivalent counts; tolerance = jitter + rounding after scaling.
+        k = row.get('count_scale', 1.0)
         lo_t, hi_t = min(r['T'] for r in pool), max(r['T'] for r in pool)
         lo_u, hi_u = min(r['U'] for r in pool), max(r['U'] for r in pool)
-        checks['经验范围'] = (lo_t - max(T_JITTER) <= row['T'] <= hi_t + max(T_JITTER)
-                          and lo_u - max(U_JITTER) <= row['U'] <= hi_u + max(U_JITTER))
+        tol_t, tol_u = max(T_JITTER) + MULTIPLE / 2 / k, max(U_JITTER) + 0.5 / k
+        checks['经验范围'] = (lo_t - tol_t <= row['T'] / k <= hi_t + tol_t
+                          and lo_u - tol_u <= row['U'] / k <= hi_u + tol_u)
     return checks
 
 
