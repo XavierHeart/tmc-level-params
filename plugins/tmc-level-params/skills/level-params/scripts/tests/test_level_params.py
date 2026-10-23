@@ -65,10 +65,12 @@ class BatchTests(unittest.TestCase):
             self.assertTrue((lo is None or row['score'] >= lo) and (hi is None or row['score'] < hi))
 
     def test_a_level_depends_only_on_theme_tier_and_seed(self):
+        # Unless the batch order rule (2026-10-23) redraws it; then it is marked basis.order_redrawn.
+        for in_batch in self.levels:
+            alone = generate.generate(MODEL, [{'theme': in_batch['theme'], 'tier': in_batch['tier']}])['levels'][0]
+            same = ({k: v for k, v in alone.items() if k != 'index'} == {k: v for k, v in in_batch.items() if k != 'index'})
+            self.assertEqual(same, not in_batch['basis'].get('order_redrawn'), (in_batch['theme'], in_batch['tier']))
         alone = generate.generate(MODEL, [{'theme': '月球基地', 'tier': 3}])['levels'][0]
-        in_batch = next(r for r in self.levels if (r['theme'], r['tier']) == ('月球基地', 3))
-        self.assertEqual({k: v for k, v in alone.items() if k != 'index'},
-                         {k: v for k, v in in_batch.items() if k != 'index'})
         other = generate.generate(MODEL, [{'theme': '月球基地', 'tier': 3}], seed='x')['levels'][0]
         self.assertNotEqual(other['per_kind'], alone['per_kind'])
 
@@ -132,6 +134,76 @@ class BatchTests(unittest.TestCase):
         row = copy.deepcopy(self.levels[2])
         row['duration_s'] += 300           # changes the score, so the stored score no longer matches
         self.assertFalse(generate.check_tier(row, tm)['难度分在档内'])
+
+    def test_t_band_per_tier(self):
+        # 2026-10-23: 25-75 % of the real T of each tier, times COUNT_SCALE.
+        self.assertEqual(self.result['tier_model']['T_band_scaled'],
+                         {'1': [78, 105], '2': [94, 121], '3': [104, 129], '4': [110, 140], '5': [120, 158]})
+        for row in self.levels:
+            lo, hi = generate.t_band(MODEL.tiers, row['tier'])
+            self.assertTrue(lo <= row['T'] <= hi, (row['tier'], row['T']))
+            self.assertTrue(row['checks']['T在档内范围'])
+        tm = self.result['tier_model']
+        row = copy.deepcopy(self.levels[0])
+        row['T'] = generate.t_band(tm, row['tier'])[1] + 3
+        self.assertFalse(generate.check_tier(row, tm)['T在档内范围'])
+        old = {k: v for k, v in tm.items() if k != 'T_band'}
+        self.assertNotIn('T在档内范围', generate.check_tier(self.levels[0], old))
+
+    def test_draw_outside_the_t_band_is_redrawn(self):
+        first = generate.generate_level(MODEL, '月球基地', 3)
+        raw = copy.deepcopy(MODEL.raw)
+        lo, hi = raw['tiers']['T_band']['3']
+        if first['T'] / generate.COUNT_SCALE - lo > hi - first['T'] / generate.COUNT_SCALE:
+            raw['tiers']['T_band']['3'] = [lo, first['T'] / generate.COUNT_SCALE - 6]   # band now ends below it
+        else:
+            raw['tiers']['T_band']['3'] = [first['T'] / generate.COUNT_SCALE + 6, hi]   # band now starts above it
+        narrow = generate.Model(raw)
+        row = generate.generate_level(narrow, '月球基地', 3)
+        band = generate.t_band(narrow.tiers, 3)
+        self.assertGreater(row['attempts'], first['attempts'])
+        self.assertTrue(band[0] <= row['T'] <= band[1])
+        self.assertFalse(band[0] <= first['T'] <= band[1])
+
+    def test_higher_tier_never_has_fewer_objects_in_a_batch(self):
+        self.assertTrue(all(generate.order_checks(self.levels)))
+        for row in self.levels:
+            self.assertTrue(row['checks']['高档不少于低档'])
+            for other in self.levels:
+                if other['tier'] < row['tier']:
+                    self.assertGreaterEqual(row['T'], other['T'])
+        self.assertTrue(any(r['basis'].get('order_redrawn') for r in self.levels))   # this batch needs redraws
+        self.assertEqual(generate.generate(MODEL, ITEMS)['levels'], self.levels)    # deterministic
+
+    def test_batch_order_redraws_the_fewest_levels_or_fails_clearly(self):
+        def fake(draws):
+            def level_draws(model, theme, tier, seed=None):
+                for n, t in enumerate(draws[theme], 1):
+                    yield {'T': t, 'tier': tier, 'attempts': n, 'basis': {}}
+            return level_draws
+        items = [{'theme': 'a', 'tier': 1}, {'theme': 'b', 'tier': 2}, {'theme': 'c', 'tier': 3}]
+        real = generate.level_draws
+        try:
+            generate.level_draws = fake({'a': [99, 93, 90], 'b': [96, 102], 'c': [105, 111]})
+            rows = [next(generate.level_draws(None, it['theme'], it['tier'])) for it in items]
+            out = generate.order_batch(None, items, rows)
+            self.assertEqual([r['T'] for r in out], [93, 96, 105])      # only level a changes, earliest fit
+            self.assertEqual([bool(r['basis'].get('order_redrawn')) for r in out], [True, False, False])
+            generate.level_draws = fake({'a': [99], 'b': [96], 'c': [105]})
+            rows = [next(generate.level_draws(None, it['theme'], it['tier'])) for it in items]
+            with self.assertRaisesRegex(RuntimeError, 'batch order'):
+                generate.order_batch(None, items, rows)
+        finally:
+            generate.level_draws = real
+
+    def test_recheck_catches_batch_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = generate.generate(MODEL, [{'theme': '月球基地', 'tier': 1}, {'theme': '冰雪小镇', 'tier': 5}])
+            self.assertTrue(all(r['checks']['高档不少于低档'] for r in result['levels']))
+            result['levels'][0]['T'], result['levels'][1]['T'] = 300, 3
+            p = Path(d) / 'p.json'
+            p.write_text(json.dumps(result, ensure_ascii=False))
+            self.assertTrue(any(f.endswith('高档不少于低档') for f in generate.recheck(str(p))))
 
     def test_bad_input_is_rejected(self):
         for bad in ([], [{'theme': '月球基地', 'tier': 6}], [{'theme': '月球基地', 'tier': 0}],

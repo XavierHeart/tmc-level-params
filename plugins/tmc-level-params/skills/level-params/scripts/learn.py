@@ -317,6 +317,8 @@ def main():
     cv = model['tiers']['cross_validation']
     print(f"  tiers: cuts {model['tiers']['cuts']}, AUC Hard/ExHard vs Normal {cv['auc_hard_or_exhard_vs_normal']}, "
           f"ExHard vs Hard {cv['auc_exhard_vs_hard']}")
+    print('  T band per tier (25%-75%, competitor scale): '
+          + ', '.join(f'{t}: {lo:g}-{hi:g}' for t, (lo, hi) in model['tiers']['T_band'].items()))
 
 
 if __name__ == '__main__':

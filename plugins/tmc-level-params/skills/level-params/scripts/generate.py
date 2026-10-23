@@ -9,8 +9,12 @@ Tiers come from model.json (see tiers.py): five equal-size tiers of real
 levels, ranked by a score learned from the competitor's Hard/ExHard labels.
 For one input: joint form, T/U, four-category split, per-kind counts, targets,
 stacking, motion and duration are drawn from real levels of that tier, then
-checked; the drawn parameters must score inside the tier. The draw depends
-only on (theme, tier, seed), so the same input always gives the same level.
+checked; the drawn parameters must score inside the tier and T must lie in
+the tier's T band (25-75 % of the real T of the tier, times COUNT_SCALE). The
+draw depends only on (theme, tier, seed), so the same input always gives the
+same level, unless the batch rule moves it: in one batch a higher tier must
+have T >= every lower tier; when the first draws break this, the fewest
+levels are redrawn from their own seeded attempts.
 Items are placeholders (建筑1, 道具3); levels of one theme share the names, so
 one asset list per theme (the largest count per category) serves them all.
 """
@@ -51,6 +55,8 @@ def load_model(path):
         model = json.load(f)
     if model.get('schema') != MODEL_SCHEMA:
         sys.exit(f'{path}: not a {MODEL_SCHEMA} file (run learn.py)')
+    if 'T_band' not in model.get('tiers', {}):
+        sys.exit(f'{path}: no tiers.T_band (run learn.py)')
     return model
 
 
@@ -111,6 +117,14 @@ def largest_remainder(total, weights, minimum):
 
 def round3(x):
     return max(MULTIPLE, MULTIPLE * round(x / MULTIPLE))
+
+
+def t_band(tier_model, tier, count_scale=COUNT_SCALE):
+    """(lo, hi) of T for this tier at our scale; None when the tier model has no band (older files)."""
+    band = tier_model.get('T_band', {}).get(str(tier))
+    if band is None:
+        return None
+    return round(band[0] * count_scale), round(band[1] * count_scale)
 
 
 # ---------- one tier ----------
@@ -289,6 +303,9 @@ def check_tier(row, tier_model, pool=None):
     checks = {'种类加总': kinds_ok and per_cat_ok, '数量加总': qty_ok and per_cat_ok, '数量3倍数': mult_ok,
               'U不超过T/3': ratio_ok, '目标明细': target_ok, '叠放3倍数': stack_ok, '运动前提': motion_ok,
               '难度分在档内': in_tier}
+    band = t_band(tier_model, row['tier'], row.get('count_scale', 1.0))
+    if band is not None:
+        checks['T在档内范围'] = band[0] <= row['T'] <= band[1]
     if pool is not None:
         # Compare competitor-equivalent counts; tolerance = jitter + rounding after scaling.
         k = row.get('count_scale', 1.0)
@@ -354,7 +371,8 @@ def item_seed(theme, seed=None):
     return f'{theme}:{seed}' if seed else theme
 
 
-def generate_level(model, theme, tier, seed=None):
+def level_draws(model, theme, tier, seed=None):
+    """Every valid draw among the ATTEMPTS seeded attempts, in attempt order."""
     s = item_seed(theme, seed)
     for attempt in range(ATTEMPTS):
         rng = random.Random(f'{s}:tier{tier}:{attempt}')
@@ -363,8 +381,84 @@ def generate_level(model, theme, tier, seed=None):
         except Retry:
             continue
         row['attempts'] = attempt + 1
+        yield row
+
+
+def generate_level(model, theme, tier, seed=None):
+    for row in level_draws(model, theme, tier, seed):
         return row
     raise RuntimeError(f'{theme}:{tier}: no valid parameters after {ATTEMPTS} attempts')
+
+
+def order_checks(levels):
+    """Per level: T >= T of every lower-tier level and <= T of every higher-tier level in the batch."""
+    return [all(r['T'] >= o['T'] for o in levels if o['tier'] < r['tier'])
+            and all(r['T'] <= o['T'] for o in levels if o['tier'] > r['tier']) for r in levels]
+
+
+def order_batch(model, items, rows, seed=None):
+    """2026-10-23: in one batch a higher tier must have T >= every lower tier.
+
+    When the first draws break this, choose, per tier, a T interval [cut below, cut above]
+    (cuts non-decreasing with the tier) so that the fewest levels change; a changed level
+    takes its earliest valid seeded attempt inside its interval. Deterministic; at most
+    ATTEMPTS attempts per level. Raises RuntimeError when no choice works."""
+    if all(order_checks(rows)):
+        return rows
+    draws = [list(level_draws(model, it['theme'], it['tier'], seed)) for it in items]
+    present = sorted({it['tier'] for it in items})
+    members = {t: [i for i, it in enumerate(items) if it['tier'] == t] for t in present}
+    values = sorted({d['T'] for ds in draws for d in ds})
+    lo_inf, hi_inf = float('-inf'), float('inf')
+
+    def pick(i, a, b):
+        """(changed, attempt) of the draw level i takes inside [a, b], or None."""
+        if a <= rows[i]['T'] <= b:
+            return (0, rows[i]['attempts'])
+        for d in draws[i]:
+            if a <= d['T'] <= b:
+                return (1, d['attempts'])
+        return None
+
+    def cost(t, a, b):
+        total = (0, 0)
+        for i in members[t]:
+            c = pick(i, a, b)
+            if c is None:
+                return None
+            total = (total[0] + c[0], total[1] + c[1])
+        return total
+
+    def add(x, y):
+        return None if x is None or y is None else (x[0] + y[0], x[1] + y[1])
+
+    # best[c] = (cost, cuts) for the tiers so far, with the top cut at value c.
+    best = {c: (cost(present[0], lo_inf, c), [c]) for c in values}
+    best = {c: v for c, v in best.items() if v[0] is not None}
+    for t in present[1:-1]:
+        nxt = {}
+        for c in values:
+            options = [(add(v[0], cost(t, prev, c)), v[1] + [c]) for prev, v in best.items() if prev <= c]
+            options = [o for o in options if o[0] is not None]
+            if options:
+                nxt[c] = min(options, key=lambda o: (o[0], o[1]))
+        best = nxt
+    final = [(add(v[0], cost(present[-1], prev, hi_inf)), v[1]) for prev, v in best.items()]
+    final = [o for o in final if o[0] is not None]
+    if not final:
+        raise RuntimeError(
+            'batch order: no draw (at most %d attempts per level) gives every higher tier a T >= every '
+            'lower tier; tiers in this batch: %s' % (ATTEMPTS, ', '.join(map(str, present))))
+    _, cuts = min(final, key=lambda o: (o[0], o[1]))
+    bounds = [lo_inf] + cuts + [hi_inf]
+    out = list(rows)
+    for j, t in enumerate(present):
+        a, b = bounds[j], bounds[j + 1]
+        for i in members[t]:
+            if not a <= rows[i]['T'] <= b:
+                out[i] = next(d for d in draws[i] if a <= d['T'] <= b)
+                out[i]['basis']['order_redrawn'] = True
+    return out
 
 
 def slot_category(slot):
@@ -397,17 +491,20 @@ def check_batch(levels, assets):
 
 
 def tier_model_summary(model):
-    keep = ('method', 'features', 'mean', 'std', 'weights', 'bias', 'cuts', 'cross_validation')
-    return {k: model.tiers[k] for k in keep}
+    keep = ('method', 'features', 'mean', 'std', 'weights', 'bias', 'cuts', 'T_band_quantiles', 'T_band',
+            'cross_validation')
+    out = {k: model.tiers[k] for k in keep}
+    out['T_band_scaled'] = {str(t): list(t_band(model.tiers, t)) for t in range(1, tiers.TIERS + 1)}
+    return out
 
 
 def generate(model, items, seed=None):
     items = [{'theme': it['theme'].strip(), 'tier': int(it['tier'])} for it in items]
     check_items(items)
-    levels = []
-    for n, it in enumerate(items, 1):
-        row = generate_level(model, it['theme'], it['tier'], seed)
-        levels.append({'index': n, 'theme': it['theme'], **row})
+    rows = order_batch(model, items, [generate_level(model, it['theme'], it['tier'], seed) for it in items], seed)
+    for row, ok in zip(rows, order_checks(rows)):
+        row['checks']['高档不少于低档'] = ok
+    levels = [{'index': n, 'theme': it['theme'], **row} for n, (it, row) in enumerate(zip(items, rows), 1)]
     assets = asset_lists(levels)
     return {
         'schema': SCHEMA,
@@ -452,7 +549,8 @@ def text_per_kind(row, nm=None):
     return '、'.join(f'{label(k, nm)}×{v}' for k, v in row['per_kind'].items())
 
 
-CHECK_KEYS = ['种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '难度分在档内', '经验范围']
+CHECK_KEYS = ['种类加总', '数量加总', '数量3倍数', 'U不超过T/3', '目标明细', '叠放3倍数', '运动前提', '难度分在档内',
+              'T在档内范围', '高档不少于低档', '经验范围']
 COLUMNS = ['序号', '主题', '档位', '难度分', '联合形态', '形态说明', '物件种类总数', '物件数量总数', '目标种类数', '目标总数量',
            '目标种类明细', '建筑种类', '建筑数量', '道具种类', '道具数量', '载具种类', '载具数量', '角色种类', '角色数量',
            '各类物件明细', '每种物件数量', '是否叠放', '叠放类型', '叠放种类数', '叠放套数总计', '叠放种类套数明细',
@@ -539,9 +637,11 @@ def recheck(path):
     if result.get('schema') != SCHEMA:
         return [f'not a {SCHEMA} file']
     failures = []
-    for row in result['levels']:
-        failures += [f"level {row['index']} {row['theme']}:{row['tier']}: {k}"
-                     for k, v in check_tier(row, result['tier_model']).items() if not v]
+    for row, ordered in zip(result['levels'], order_checks(result['levels'])):
+        checks = check_tier(row, result['tier_model'])
+        if '高档不少于低档' in row['checks']:  # files written before 2026-10-23 have no batch order rule
+            checks['高档不少于低档'] = ordered
+        failures += [f"level {row['index']} {row['theme']}:{row['tier']}: {k}" for k, v in checks.items() if not v]
     assets = asset_lists(result['levels'])
     failures += [f'batch: {k}' for k, v in check_batch(result['levels'], assets).items() if not v]
     if assets != result['assets']:
