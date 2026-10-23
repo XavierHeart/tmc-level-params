@@ -11,6 +11,7 @@ Standard library only; deterministic.
 import collections
 import math
 import random
+import statistics
 
 FEATURES = [
     # key, label, how it is computed
@@ -28,6 +29,7 @@ ITERATIONS = 400
 RATE = 0.5
 FOLDS = 5
 CV_SEED = 7
+T_BAND_QUANTILES = (0.25, 0.75)  # 2026-10-23: per-tier T band, inclusive quartiles of the real T
 
 
 def real_features(rec):
@@ -82,6 +84,18 @@ def score(model, feats):
 
 def tier_of(cuts, value):
     return 1 + sum(value >= c for c in cuts)
+
+
+def t_bands(levels, model, cuts):
+    """Per tier: the 25 %-75 % range of the real T (competitor scale) of the levels scored into it."""
+    by = collections.defaultdict(list)
+    for r in levels:
+        by[tier_of(cuts, score(model, real_features(r)))].append(r['T'])
+    out = {}
+    for t in sorted(by):
+        q = statistics.quantiles(sorted(by[t]), n=100, method='inclusive')
+        out[str(t)] = [round(q[int(T_BAND_QUANTILES[0] * 100) - 1], 4), round(q[int(T_BAND_QUANTILES[1] * 100) - 1], 4)]
+    return out
 
 
 def auc(scores, labels):
@@ -141,6 +155,8 @@ def learn(levels):
         'weights': model['weights'],
         'bias': model['bias'],
         'cuts': cuts,
+        'T_band_quantiles': list(T_BAND_QUANTILES),
+        'T_band': t_bands(levels, model, cuts),
         'range': [r4(ordered[0]), r4(ordered[-1])],
         'cross_validation': {
             'folds': FOLDS,
